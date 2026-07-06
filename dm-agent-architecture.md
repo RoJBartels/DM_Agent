@@ -1,0 +1,179 @@
+# Dungeon Master Agent — Architecture Reference (v1, locked)
+
+**Status:** Global architecture agreed and locked.
+**Core design principle:** *The LLM narrates, code adjudicates.* Everything mechanical (dice, HP, DCs, combat math) is handled by deterministic tools — never by the LLM.
+
+---
+
+## 1. Layered Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Frontend (stage, not chat): web / Discord           │
+│  Consumes event stream via websocket                 │
+├─────────────────────────────────────────────────────┤
+│  Orchestrator / Agent Loop (FastAPI + Anthropic SDK) │
+│  - routes player input                               │
+│  - tool calling, streaming, error handling           │
+│  - spawns NPC subagents                              │
+├──────────────┬──────────────────┬───────────────────┤
+│ Rules Engine │  Knowledge Layer │  Ambient Layer     │
+│ (determin-   │  (static hybrid  │  (event-triggered  │
+│  istic code) │   + dynamic RAG) │   sfx/visuals)     │
+├──────────────┴──────────────────┴───────────────────┤
+│  Game State: Postgres (structured) + Vector DB       │
+│  + Knowledge Graph (static canon)                    │
+└─────────────────────────────────────────────────────┘
+```
+
+### Components
+
+1. **Orchestrator / agent loop** — code service (Python/FastAPI + Anthropic SDK). Owns conversation state, tool-call round-trips, streaming, subagent spawning. *Not* built in a workflow engine.
+2. **Game state store** — Postgres for structured state (HP, inventory, quest flags, positions); vector DB (pgvector or Qdrant) for semantic recall.
+3. **Rules engine** — deterministic code for dice, combat math, adjudication. LLM decides *what* to roll ("DC 15 Dex save"), the engine rolls and returns the result.
+4. **Narrative layer** — LLM generates prose, dialogue, consequences, grounded by retrieved state + rules output.
+5. **Ambient layer** — client-side renderer for sound and visual effects, driven by the event stream (see §6).
+
+---
+
+## 2. Knowledge Layer — Hybrid Approach (decided)
+
+**Decision: Hybrid is locked.** The static/dynamic split addresses Microsoft GraphRAG's known weakness — slow, expensive re-indexing when new information arrives — by keeping live updates out of the graph entirely.
+
+### Static layer (canon) — graph + attached prose
+- Built **once at campaign creation**; expensive GraphRAG-style indexing is acceptable here.
+- **Nodes:** `Character`, `Location`, `Faction`, `Item`, `Deity`, `Event`, `Law/Rule`
+- **Edges:** `RULES`, `LOCATED_IN`, `MEMBER_OF`, `ENEMY_OF`, `KNOWS_SECRET`, `GOVERNED_BY_LAW`
+- Long lore prose stored as **text properties on nodes, with embeddings** — the graph is the skeleton, prose is the flesh.
+- Bootstrap: feed worldbuilding docs to an LLM with an entity/relation extraction prompt that emits graph inserts.
+
+### Dynamic layer (session history) — pure vector RAG
+- Session events, player actions, NPC deaths, promises. Appended live (milliseconds, no re-indexing).
+- After each scene, the cheap model writes a summary chunk with metadata: `session`, `timestamp`, `entities: [canonical entity IDs]`.
+- **Entity IDs are the join key** between the two layers.
+
+### Retrieval: one tool, `lookup_lore(question)`
+Internally: extract entities → fetch graph nodes + 1–2 hop neighborhood → vector search (static prose + dynamic chunks filtered by entity ID) → synthesize.
+**Recency-override rule (enforced in the synthesis prompt): dynamic facts supersede static canon on conflict.** The dead duke must not host a banquet.
+
+### Chronicler (background job, planned)
+Between sessions, promotes settled dynamic facts into the graph (e.g. flip Aldric's node to `deceased`). Does GraphRAG's expensive update asynchronously, where latency doesn't matter.
+
+### ⚠️ Open decision: graph technology
+| Option | Notes |
+|---|---|
+| **Neo4j** | Pragmatic default; LLMs write decent Cypher; Aura free tier |
+| **Kuzu / FalkorDB** | Embedded, lightweight, good for prototype |
+| **RDF + SPARQL (Oxigraph)** | Ontologies + OWL inference; more rigor, more friction |
+| **Microsoft GraphRAG (as indexer)** | Could be used for the *one-time static build only* (entity extraction, Leiden community detection, community summaries); its slow-update drawback doesn't apply since the static layer never updates live |
+
+To be decided in a follow-up discussion. The hybrid architecture is fixed regardless of which store/indexer is chosen.
+
+---
+
+## 3. Agent Toolset
+
+| Tool | Purpose | Notes |
+|---|---|---|
+| `roll_dice(expression)` | e.g. `2d6+3` | Deterministic |
+| `character_sheet` (get/update) | PC stats, inventory, HP | Postgres-backed |
+| `lookup_rules(query)` | RAG over **SRD 5.1** (Creative Commons) | Separate corpus from lore |
+| `lookup_lore(question)` | Hybrid retrieval (§2), single black box to the orchestrator | Recency-override built in |
+| `update_world_state` | Writes to dynamic layer + structured state | |
+| `manage_combat` | Initiative, turn order, positions | Shares coordinate data with maps |
+| `generate_art(prompt)` | Diffusion model for portraits/scene art | Portraits generated **once**, URL stored on the graph node for visual continuity |
+| `generate_map(spec)` | LLM emits structured JSON (rooms, exits, terrain, tokens) → renderer (SVG/canvas or Foundry VTT format) | Maps are **mechanically meaningful** — map data lives in game state, not just an image |
+| `visualize(description)` | Live "concept sketch" of the group's ideas via fast image model | See §6 |
+
+---
+
+## 4. LLM Strategy — Two-Model Setup
+
+- **High-capability model** (Opus/Fable-class): main narration, adjudication decisions, plot-critical NPCs. Long context + strong instruction-following are essential for campaign coherence.
+- **Cheap fast model** (Haiku-class): session summarization into memory, player-intent classification, state updates, minor NPCs.
+- **Provider: Anthropic API** (preferred). Architecture remains provider-agnostic.
+
+---
+
+## 5. NPC Subagents
+
+When a player addresses an NPC, the orchestrator spawns a **scoped subagent**:
+
+- **System prompt** built from the NPC's graph node: personality, goals, secrets, speech style, faction loyalty.
+- **Scoped knowledge** (key feature): only lore the NPC *would know* — their graph neighborhood + dynamic events tagged with them or their location. Information asymmetry for free; the blacksmith cannot spoil the lich's secret.
+- **Scoped tools:** at most a restricted `lookup_lore`. NPCs never roll dice or mutate world state.
+- **Stateless between conversations:** NPC memory lives in the dynamic store and is reconstructed at spawn time — no NPC-local state that can drift from world state.
+- The orchestrator detects dialogue end, summarizes the exchange into the dynamic store ("blacksmith agreed to forge the key, wants 50 gold"), and resumes narration.
+- Minor NPCs run on the cheap model; plot-critical NPCs on the big model.
+
+---
+
+## 6. Ambient Experience Layer
+
+**Governing principle: latency budget decides pre-built vs. generated.** A door creak arriving 4 seconds late is worse than silence.
+
+### Pre-built (asset library, instant playback <100 ms)
+| Category | Approach |
+|---|---|
+| **Sound effects** (door creak, sword clash, footsteps, dragon roar) | Curated/licensed library of a few hundred tagged SFX (Freesound, game-asset packs). Client plays the matching asset on event. |
+| **Ambient soundscapes** (`tavern_busy`, `crypt_drips`) | Pre-built loops, triggered on location entry. |
+| **Spell/effect visuals** (fireball, healing glow, lightning) | Library of particle effects / short loops, overlaid on the canvas map at grid position. Triggered by rules-engine events (e.g. `cast_spell(fireball)` resolves → effect tag in event). VTT-style. |
+| Optional: generative audio (ElevenLabs SFX, AudioCraft) | **Offline only**, to pre-generate library assets — never for live playback. |
+
+### Generated live (seconds of latency acceptable)
+| Category | Approach |
+|---|---|
+| **Group-idea sketches** ("raft from the tavern door") | `visualize()` tool → fast image model (Flux Schnell / SDXL Turbo), 5–10 s. Presented as a "concept sketch" so quality expectations stay low — feels like the DM sketching, not lag. |
+| **NPC portraits / scene art** | Generated once (at creation / first encounter), then cached and reused. |
+
+### Event stream (the architectural glue)
+The narration model's output is an **event stream, not just text**: prose tokens interleaved with typed events —
+`sfx`, `ambience`, `effect`, `visual`, `map_update` — delivered to the client over a websocket. The rules engine emits events too (dice results, damage numbers). The frontend is a small **stage** that renders the stream, not a chat window.
+
+---
+
+## 7. Background Workflows (n8n — optional, not v1)
+
+The core agent loop stays in code (latency-sensitive, multi-round tool calls). n8n (or plain cron/Celery/pg_cron) fits only the asynchronous edges:
+
+- Chronicler job (dynamic → graph promotion between sessions)
+- Discord notifications, session-recap emails, state backups
+- "Rebuild static graph when a new lore doc lands in this folder"
+
+**Decision: skip n8n for v1; add later only if background workflows multiply.**
+
+---
+
+## 8. Stack Summary
+
+| Concern | Choice |
+|---|---|
+| Backend | Python + FastAPI, Anthropic SDK tool-use loop (LangGraph optional) |
+| Structured state | Postgres (SQLite for prototype) |
+| Vector store | pgvector or Qdrant |
+| Knowledge graph | **Open** — see §2 |
+| Rules corpus | SRD 5.1 |
+| Frontend | Web stage (websocket event stream); Discord bot as natural TTRPG channel |
+| Hosting | Fly.io / Railway for prototype |
+
+---
+
+## 9. Build Order
+
+1. **Core loop:** text narration + dice + character sheets + structured state
+2. **Knowledge layer:** static graph build + dynamic RAG + `lookup_lore` with recency-override
+3. **SFX/ambience:** event stream + tagged asset library *(huge immersion win, tiny effort — just tag matching)*
+4. **Combat + maps:** `manage_combat` + `generate_map` renderer sharing coordinates
+5. **NPC subagents** with scoped knowledge
+6. **Map effect overlays**, then **live sketching** (`visualize`)
+7. Later: chronicler job, n8n if needed
+
+---
+
+## 10. Open Points for Next Discussion
+
+1. **Graph technology / static indexer** — Neo4j vs. Kuzu vs. RDF, and whether to use Microsoft GraphRAG's pipeline for the one-time static build (§2)
+2. Retrieval tool interface details + synthesis prompt
+3. Chronicler job design
+4. NPC subagent prompt/scoping details
+5. Ontology/schema refinement for the world graph
