@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DM Agent — Stage</title>
+<style>
+  :root {
+    --bg: #14120f;
+    --panel: #1d1a15;
+    --text: #e8e0cf;
+    --dim: #9a917c;
+    --accent: #c9a227;
+    --danger: #c05b4d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: Georgia, 'Times New Roman', serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 0.6rem 1.2rem; border-bottom: 1px solid #2c2820;
+    font-variant: small-caps; letter-spacing: 0.15em; color: var(--dim);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  #status { font-size: 0.8rem; letter-spacing: normal; font-variant: normal; }
+  #log {
+    flex: 1; overflow-y: auto; padding: 1.5rem clamp(1rem, 12vw, 8rem);
+    line-height: 1.65; font-size: 1.05rem;
+  }
+  .dm { white-space: pre-wrap; margin: 0 0 1.1rem; }
+  .player {
+    color: var(--accent); font-style: italic; margin: 0 0 1.1rem;
+  }
+  .player::before { content: "➤ "; }
+  .chip {
+    display: inline-block; background: var(--panel); border: 1px solid #3a3428;
+    border-radius: 0.6rem; padding: 0.1rem 0.55rem; margin: 0 0.15rem;
+    font-family: ui-monospace, monospace; font-size: 0.85rem; color: var(--accent);
+  }
+  .notice {
+    color: var(--dim); font-size: 0.85rem; font-family: ui-monospace, monospace;
+    margin: 0 0 1.1rem;
+  }
+  .error { color: var(--danger); }
+  form {
+    display: flex; gap: 0.6rem; padding: 0.9rem 1.2rem;
+    border-top: 1px solid #2c2820; background: var(--panel);
+  }
+  input[type=text] {
+    flex: 1; background: var(--bg); color: var(--text);
+    border: 1px solid #3a3428; border-radius: 0.4rem;
+    padding: 0.55rem 0.8rem; font-size: 1rem; font-family: inherit;
+  }
+  input[type=text]:focus { outline: 1px solid var(--accent); }
+  button {
+    background: var(--accent); color: #1a1815; border: 0; border-radius: 0.4rem;
+    padding: 0.55rem 1.2rem; font-size: 1rem; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: wait; }
+</style>
+</head>
+<body>
+  <header>
+    <span>Dungeon Master</span>
+    <span id="status">connecting…</span>
+  </header>
+  <div id="log"></div>
+  <form id="form">
+    <input id="input" type="text" autocomplete="off"
+           placeholder="What do you do?" disabled>
+    <button id="send" type="submit" disabled>Act</button>
+  </form>
+  <script src="/static/stage.js"></script>
+</body>
+</html>
