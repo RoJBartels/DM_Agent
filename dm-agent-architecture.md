@@ -1,6 +1,6 @@
 # Dungeon Master Agent — Architecture Reference (v1, locked)
 
-**Status:** Global architecture agreed and locked.
+**Status:** Global architecture agreed and locked. **Addendum 2026-07-12** (post first play session): §2b (story/adventure guide) added and decided; does not reopen any prior decision.
 **Core design principle:** *The LLM narrates, code adjudicates.* Everything mechanical (dice, HP, DCs, combat math) is handled by deterministic tools — never by the LLM.
 
 ---
@@ -33,6 +33,7 @@
 3. **Rules engine** — deterministic code for dice, combat math, adjudication. LLM decides *what* to roll ("DC 15 Dex save"), the engine rolls and returns the result.
 4. **Narrative layer** — LLM generates prose, dialogue, consequences, grounded by retrieved state + rules output.
 5. **Ambient layer** — client-side renderer for sound and visual effects, driven by the event stream (see §6).
+6. **Story guide (optional)** — advisory beat outline from an uploaded adventure, injected into context each turn to guide pacing without scripting outcomes (see §2b).
 
 ---
 
@@ -59,6 +60,29 @@ Internally: extract entities → fetch graph nodes + 1–2 hop neighborhood → 
 ### Chronicler (background job, planned)
 Between sessions, promotes settled dynamic facts into the graph (e.g. flip Aldric's node to `deceased`). Does GraphRAG's expensive update asynchronously, where latency doesn't matter.
 
+---
+
+## 2b. Story / Adventure Guide (optional, advisory — decided 2026-07-12)
+
+**Decision: locked.** A user may optionally upload a pre-written adventure (a published module, or their own outline) to guide the narrator's pacing. This is a **different kind of bucket than §2's lore graph**, not an extension of it:
+
+- **Lore (§2) is declarative** — facts that are true about the world (Duke Aldric rules Harrowgate).
+- **A story guide is procedural** — the author's intended arc (Act 1: the party discovers the duke's secret). It describes what the writer *hoped* would happen, not what *is* true, and it must never override player agency: *the DM narrates around it, it does not narrate through the players.*
+
+### Beats, not a script
+The guide is ingested into an ordered sequence of **beats** (title, summary/read-aloud text, a trigger condition, optionally tagged with lore entity IDs — the same join-key pattern as the dynamic layer in §2), each carrying a status: `upcoming` / `active` / `completed` / `skipped`. Trigger conditions replace a fixed sequence specifically so the party can go off-script without anything breaking — there is no "wrong" order, only beats that haven't happened yet.
+
+### Delivery: proactive context, not a retrieval tool
+Unlike `lookup_lore`, which is queried on demand, pacing requires the *current* beat to be visible to the narrator on every turn without it having to think to ask. The orchestrator injects the active beat plus the next one or two upcoming beats into context each turn, framed explicitly as the DM's private notes — advisory, never binding. This is why it's a context-injection mechanism, not a new agent tool.
+
+### Progress: code adjudicates, LLM judges
+A single tool, `update_story_progress(beat_id, status)`, mirrors `update_world_state`'s split: the LLM makes the semantic call that a beat has been reached, completed, or skipped by the party's choices; the tool deterministically persists that call. No dice, no gating — nothing about this feature is allowed to constrain what the players can do, only what the DM privately expects to happen next.
+
+### Optional by construction
+A campaign with no uploaded guide has no beats and plays exactly as an entirely improvised campaign does today — this feature adds a bucket, it does not change the default.
+
+---
+
 ### ⚠️ Open decision: graph technology
 | Option | Notes |
 |---|---|
@@ -80,6 +104,7 @@ To be decided in a follow-up discussion. The hybrid architecture is fixed regard
 | `lookup_rules(query)` | RAG over **SRD 5.1** (Creative Commons) | Separate corpus from lore |
 | `lookup_lore(question)` | Hybrid retrieval (§2), single black box to the orchestrator | Recency-override built in |
 | `update_world_state` | Writes to dynamic layer + structured state | |
+| `update_story_progress(beat_id, status)` | Marks a story-guide beat upcoming/active/completed/skipped (§2b) | Optional — only exists if a story guide was uploaded; LLM judges, tool persists |
 | `manage_combat` | Initiative, turn order, positions | Shares coordinate data with maps |
 | `generate_art(prompt)` | Diffusion model for portraits/scene art | Portraits generated **once**, URL stored on the graph node for visual continuity |
 | `generate_map(spec)` | LLM emits structured JSON (rooms, exits, terrain, tokens) → renderer (SVG/canvas or Foundry VTT format) | Maps are **mechanically meaningful** — map data lives in game state, not just an image |
@@ -153,6 +178,7 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 | Vector store | pgvector or Qdrant |
 | Knowledge graph | **Open** — see §2 |
 | Rules corpus | SRD 5.1 |
+| Story guide | Optional per campaign, `story_beats` table — see §2b |
 | Frontend | Web stage (websocket event stream); Discord bot as natural TTRPG channel |
 | Hosting | Fly.io / Railway for prototype |
 
@@ -161,7 +187,7 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 ## 9. Build Order
 
 1. **Core loop:** text narration + dice + character sheets + structured state
-2. **Knowledge layer:** static graph build + dynamic RAG + `lookup_lore` with recency-override
+2. **Knowledge layer:** static graph build + dynamic RAG + `lookup_lore` with recency-override, plus optional story-guide ingestion (§2b)
 3. **SFX/ambience:** event stream + tagged asset library *(huge immersion win, tiny effort — just tag matching)*
 4. **Combat + maps:** `manage_combat` + `generate_map` renderer sharing coordinates
 5. **NPC subagents** with scoped knowledge
