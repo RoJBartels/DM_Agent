@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from dm_agent.api import router as api_router
 from dm_agent.db import GameSession, db_session
 from dm_agent.events import ErrorEvent, Event, PlayerAction
 from dm_agent.orchestrator import Orchestrator
@@ -20,6 +21,7 @@ STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
 
 app = FastAPI(title="DM Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.include_router(api_router)
 
 _orchestrator: Orchestrator | None = None
 _session_locks: dict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)

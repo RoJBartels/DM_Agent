@@ -8,8 +8,11 @@
   :root {
     --bg: #14120f;
     --panel: #1d1a15;
+    --panel2: #232019;
     --text: #e8e0cf;
     --dim: #9a917c;
+    --line: #2c2820;
+    --line2: #3a3428;
     --accent: #c9a227;
     --danger: #c05b4d;
   }
@@ -20,22 +23,47 @@
     display: flex; flex-direction: column; height: 100vh;
   }
   header {
-    padding: 0.6rem 1.2rem; border-bottom: 1px solid #2c2820;
+    padding: 0.6rem 1.2rem; border-bottom: 1px solid var(--line);
     font-variant: small-caps; letter-spacing: 0.15em; color: var(--dim);
     display: flex; justify-content: space-between; align-items: baseline;
   }
   #status { font-size: 0.8rem; letter-spacing: normal; font-variant: normal; }
+
+  /* Layout: sidebar + stage */
+  #app { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 17rem; flex-shrink: 0; background: var(--panel);
+    border-right: 1px solid var(--line); overflow-y: auto;
+    padding: 1rem 0.9rem; display: flex; flex-direction: column; gap: 1.4rem;
+  }
+  #sidebar.collapsed { display: none; }
+  #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .side-section h2 {
+    font-size: 0.72rem; font-variant: small-caps; letter-spacing: 0.14em;
+    color: var(--dim); margin: 0 0 0.5rem; font-weight: normal;
+  }
+  .row { display: flex; gap: 0.4rem; align-items: center; }
+  .party-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.4rem 0.55rem; border: 1px solid var(--line2); border-radius: 0.4rem;
+    margin-bottom: 0.4rem; cursor: pointer; background: var(--panel2);
+  }
+  .party-item:hover { border-color: var(--accent); }
+  .party-item .pname { font-size: 0.95rem; }
+  .party-item .pmeta { font-size: 0.72rem; color: var(--dim); }
+  .party-item .hp { font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--dim); }
+  .muted { color: var(--dim); font-size: 0.8rem; }
+
   #log {
-    flex: 1; overflow-y: auto; padding: 1.5rem clamp(1rem, 12vw, 8rem);
+    flex: 1; overflow-y: auto; padding: 1.5rem clamp(1rem, 8vw, 6rem);
     line-height: 1.65; font-size: 1.05rem;
   }
   .dm { white-space: pre-wrap; margin: 0 0 1.1rem; }
-  .player {
-    color: var(--accent); font-style: italic; margin: 0 0 1.1rem;
-  }
+  .player { color: var(--accent); font-style: italic; margin: 0 0 1.1rem; }
   .player::before { content: "➤ "; }
   .chip {
-    display: inline-block; background: var(--panel); border: 1px solid #3a3428;
+    display: inline-block; background: var(--panel); border: 1px solid var(--line2);
     border-radius: 0.6rem; padding: 0.1rem 0.55rem; margin: 0 0.15rem;
     font-family: ui-monospace, monospace; font-size: 0.85rem; color: var(--accent);
   }
@@ -44,34 +72,95 @@
     margin: 0 0 1.1rem;
   }
   .error { color: var(--danger); }
-  form {
+
+  form#form {
     display: flex; gap: 0.6rem; padding: 0.9rem 1.2rem;
-    border-top: 1px solid #2c2820; background: var(--panel);
+    border-top: 1px solid var(--line); background: var(--panel);
   }
-  input[type=text] {
-    flex: 1; background: var(--bg); color: var(--text);
-    border: 1px solid #3a3428; border-radius: 0.4rem;
-    padding: 0.55rem 0.8rem; font-size: 1rem; font-family: inherit;
+  input[type=text], input[type=number], textarea, select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 0.4rem;
+    padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit; width: 100%;
   }
-  input[type=text]:focus { outline: 1px solid var(--accent); }
+  form#form input[type=text] { flex: 1; }
+  input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); }
+  textarea { resize: vertical; min-height: 4rem; }
   button {
     background: var(--accent); color: #1a1815; border: 0; border-radius: 0.4rem;
-    padding: 0.55rem 1.2rem; font-size: 1rem; cursor: pointer;
+    padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; font-family: inherit;
   }
   button:disabled { opacity: 0.4; cursor: wait; }
+  button.ghost {
+    background: transparent; color: var(--text); border: 1px solid var(--line2);
+  }
+  button.ghost:hover { border-color: var(--accent); }
+  button.danger { background: var(--danger); color: #fff; }
+  button.small { padding: 0.3rem 0.6rem; font-size: 0.82rem; }
+
+  /* Modal */
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center; z-index: 10;
+  }
+  #overlay.open { display: flex; }
+  #modal {
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 0.6rem;
+    width: min(38rem, 92vw); max-height: 88vh; overflow-y: auto; padding: 1.4rem 1.5rem;
+  }
+  #modal h2 { margin: 0 0 1rem; font-variant: small-caps; letter-spacing: 0.08em; }
+  .field { margin-bottom: 0.85rem; }
+  .field label { display: block; font-size: 0.78rem; color: var(--dim); margin-bottom: 0.25rem; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+  .grid6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.1rem; }
+  .checkbox { display: flex; align-items: center; gap: 0.4rem; }
+  .checkbox input { width: auto; }
+  #job-status { margin-top: 0.8rem; font-family: ui-monospace, monospace; font-size: 0.85rem; }
 </style>
 </head>
 <body>
   <header>
-    <span>Dungeon Master</span>
+    <span class="row" style="gap:0.8rem">
+      <button id="toggle-sidebar" class="ghost small" title="Toggle menu">☰</button>
+      <span>Dungeon Master</span>
+    </span>
     <span id="status">connecting…</span>
   </header>
-  <div id="log"></div>
-  <form id="form">
-    <input id="input" type="text" autocomplete="off"
-           placeholder="What do you do?" disabled>
-    <button id="send" type="submit" disabled>Act</button>
-  </form>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div class="side-section">
+        <h2>Campaign</h2>
+        <div class="field"><select id="campaign-select"></select></div>
+        <button id="new-campaign" class="ghost small">＋ New campaign</button>
+      </div>
+
+      <div class="side-section">
+        <h2>Party</h2>
+        <div id="party"></div>
+        <button id="add-character" class="ghost small">＋ Add character</button>
+      </div>
+
+      <div class="side-section">
+        <h2>World lore</h2>
+        <div id="world-status" class="muted">—</div>
+        <button id="upload-world" class="ghost small" style="margin-top:0.5rem">⇪ Upload world</button>
+      </div>
+    </aside>
+
+    <div id="stage">
+      <div id="log"></div>
+      <form id="form">
+        <input id="input" type="text" autocomplete="off"
+               placeholder="What do you do?" disabled>
+        <button id="send" type="submit" disabled>Act</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="overlay"><div id="modal"></div></div>
+
   <script src="/static/stage.js"></script>
+  <script src="/static/manage.js"></script>
 </body>
 </html>

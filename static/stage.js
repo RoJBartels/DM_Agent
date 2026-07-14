@@ -68,7 +68,21 @@ const handlers = {
   },
 };
 
+function clearLog() {
+  log.innerHTML = "";
+  dmBlock = null;
+}
+
+// Connect (or switch) to a session. Closing an existing socket first, without
+// letting its onclose flip the UI into the "disconnected" state — a deliberate
+// switch is not a dropped connection.
 function connect(sessionId) {
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+  }
+  clearLog();
+  status.textContent = "connecting…";
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/session/${sessionId}`);
   ws.onopen = () => {
@@ -96,9 +110,5 @@ form.addEventListener("submit", (e) => {
   setBusy(true);
 });
 
-(async function init() {
-  const res = await fetch("/api/demo-session", { method: "POST" });
-  const { session_id } = await res.json();
-  status.textContent = `session ${session_id.slice(0, 8)}…`;
-  connect(session_id);
-})();
+// The management layer (manage.js) decides which session to connect to.
+window.Stage = { connect, clearLog };
