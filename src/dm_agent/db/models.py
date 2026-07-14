@@ -152,3 +152,29 @@ class RulesChunk(Base):
     ruleset_id: Mapped[str] = mapped_column(Text, default="dnd5e")
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+
+
+# --- Story / adventure guide (M2c, §2b): optional, advisory, per campaign ---
+#
+# A different kind of bucket than the §2 lore graph: lore is declarative fact,
+# a beat is the author's intended arc. Beats are surfaced proactively to the
+# narrator each turn as private "director's notes" (never enforced) and
+# progressed via update_story_progress. A campaign with no uploaded guide has
+# zero rows here and plays exactly as an improvised campaign. Beats are fetched
+# by (campaign, status, order) — never vector-searched — so there is no
+# embedding column. `entity_ids` join beats to canon node slugs (same pattern as
+# dynamic_chunks). SQL `order` is reserved, so the column is `order_index`.
+
+
+class StoryBeat(Base):
+    __tablename__ = "story_beats"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    order_index: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    read_aloud: Mapped[str] = mapped_column(Text, default="")
+    trigger_condition: Mapped[str] = mapped_column(Text, default="")
+    entity_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    status: Mapped[str] = mapped_column(Text, default="upcoming")  # upcoming|active|completed|skipped

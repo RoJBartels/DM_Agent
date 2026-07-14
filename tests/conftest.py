@@ -23,6 +23,7 @@ from dm_agent.db import (
     Edge,
     GameSession,
     Node,
+    StoryBeat,
     db_session,
 )
 
@@ -94,6 +95,7 @@ async def campaign() -> tuple[uuid.UUID, uuid.UUID]:
             )
             await s.execute(delete(Edge).where(Edge.campaign_id == campaign_id))
             await s.execute(delete(Node).where(Node.campaign_id == campaign_id))
+            await s.execute(delete(StoryBeat).where(StoryBeat.campaign_id == campaign_id))
             await s.execute(delete(GameSession).where(GameSession.campaign_id == campaign_id))
             await s.execute(delete(Campaign).where(Campaign.id == campaign_id))
             await s.commit()

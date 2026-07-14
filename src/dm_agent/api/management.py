@@ -13,6 +13,7 @@ to thread out for one operator.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -23,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dm_agent.db import Campaign, Character, GameSession, Node, db_session
+from dm_agent.db import Campaign, Character, GameSession, Node, StoryBeat, db_session
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class CampaignOut(BaseModel):
     created_at: datetime
     character_count: int
     has_world: bool
+    has_story: bool
 
 
 class SessionOut(BaseModel):
@@ -88,7 +90,7 @@ class CharacterOut(BaseModel):
     notes: str
 
 
-class WorldIn(BaseModel):
+class UploadIn(BaseModel):
     documents: list[str] = Field(min_length=1)
 
 
@@ -147,6 +149,9 @@ async def list_campaigns() -> list[CampaignOut]:
         world_campaigns = set(
             (await s.execute(select(Node.campaign_id).distinct())).scalars().all()
         )
+        story_campaigns = set(
+            (await s.execute(select(StoryBeat.campaign_id).distinct())).scalars().all()
+        )
 
     return [
         CampaignOut(
@@ -155,6 +160,7 @@ async def list_campaigns() -> list[CampaignOut]:
             created_at=c.created_at,
             character_count=char_counts.get(c.id, 0),
             has_world=c.id in world_campaigns,
+            has_story=c.id in story_campaigns,
         )
         for c in campaigns
     ]
@@ -173,6 +179,7 @@ async def create_campaign(body: CampaignIn) -> CampaignOut:
         created_at=campaign.created_at,
         character_count=0,
         has_world=False,
+        has_story=False,
     )
 
 
@@ -238,9 +245,22 @@ async def delete_character(character_id: uuid.UUID) -> None:
         await s.commit()
 
 
-# --- world upload (background build job) ------------------------------------
+# --- background build jobs (world lore + story guide) -----------------------
+#
+# Both uploads are slow (LLM extraction + embeddings), so each returns a job id
+# immediately and the client polls. World and story ids share one registry; the
+# ids are random hex so they never collide.
 
-_world_jobs: dict[str, JobOut] = {}
+_jobs: dict[str, JobOut] = {}
+
+
+async def _validated_docs(campaign_id: uuid.UUID, documents: list[str]) -> list[str]:
+    docs = [d for d in documents if d.strip()]
+    if not docs:
+        raise HTTPException(status_code=422, detail="no non-empty documents provided")
+    async with db_session() as s:
+        await _get_campaign(s, campaign_id)
+    return docs
 
 
 async def _run_world_build(job_id: str, campaign_id: uuid.UUID, documents: list[str]) -> None:
@@ -248,33 +268,55 @@ async def _run_world_build(job_id: str, campaign_id: uuid.UUID, documents: list[
         from dm_agent.knowledge.build import build_world  # lazy: pulls the knowledge extra
 
         stats = await build_world(campaign_id, documents)
-        _world_jobs[job_id] = JobOut(job_id=job_id, status="done", stats=stats)
+        _jobs[job_id] = JobOut(job_id=job_id, status="done", stats=stats)
     except Exception as exc:  # noqa: BLE001 — surface any failure to the poller
         log.exception("world build failed for campaign %s", campaign_id)
-        _world_jobs[job_id] = JobOut(job_id=job_id, status="error", error=str(exc))
+        _jobs[job_id] = JobOut(job_id=job_id, status="error", error=str(exc))
+
+
+async def _run_story_build(job_id: str, campaign_id: uuid.UUID, documents: list[str]) -> None:
+    try:
+        from dm_agent.knowledge.story import build_story  # lazy, mirrors world build
+
+        stats = await build_story(campaign_id, documents)
+        _jobs[job_id] = JobOut(job_id=job_id, status="done", stats=stats)
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the poller
+        log.exception("story build failed for campaign %s", campaign_id)
+        _jobs[job_id] = JobOut(job_id=job_id, status="error", error=str(exc))
+
+
+def _start_job(runner: Any, campaign_id: uuid.UUID, docs: list[str]) -> JobOut:
+    job_id = uuid.uuid4().hex
+    job = JobOut(job_id=job_id, status="running")
+    _jobs[job_id] = job
+    asyncio.create_task(runner(job_id, campaign_id, docs))
+    return job
+
+
+def _get_job(job_id: str) -> JobOut:
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+    return job
 
 
 @router.post("/campaigns/{campaign_id}/world", response_model=JobOut, status_code=202)
-async def upload_world(campaign_id: uuid.UUID, body: WorldIn) -> JobOut:
-    docs = [d for d in body.documents if d.strip()]
-    if not docs:
-        raise HTTPException(status_code=422, detail="no non-empty documents provided")
-    async with db_session() as s:
-        await _get_campaign(s, campaign_id)
-
-    job_id = uuid.uuid4().hex
-    job = JobOut(job_id=job_id, status="running")
-    _world_jobs[job_id] = job
-
-    import asyncio
-
-    asyncio.create_task(_run_world_build(job_id, campaign_id, docs))
-    return job
+async def upload_world(campaign_id: uuid.UUID, body: UploadIn) -> JobOut:
+    docs = await _validated_docs(campaign_id, body.documents)
+    return _start_job(_run_world_build, campaign_id, docs)
 
 
 @router.get("/world-jobs/{job_id}", response_model=JobOut)
 async def world_job(job_id: str) -> JobOut:
-    job = _world_jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
-    return job
+    return _get_job(job_id)
+
+
+@router.post("/campaigns/{campaign_id}/story", response_model=JobOut, status_code=202)
+async def upload_story(campaign_id: uuid.UUID, body: UploadIn) -> JobOut:
+    docs = await _validated_docs(campaign_id, body.documents)
+    return _start_job(_run_story_build, campaign_id, docs)
+
+
+@router.get("/story-jobs/{job_id}", response_model=JobOut)
+async def story_job(job_id: str) -> JobOut:
+    return _get_job(job_id)

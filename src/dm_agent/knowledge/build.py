@@ -204,6 +204,10 @@ async def _main(argv: list[str] | None = None) -> None:
     pr.add_argument("--ruleset", default=get_settings().default_ruleset)
     pr.add_argument("paths", nargs="+", help="rules text files")
 
+    ps = sub.add_parser("story", help="build a campaign's advisory story guide from an adventure")
+    ps.add_argument("--campaign", required=True, help="campaign name (get-or-create)")
+    ps.add_argument("paths", nargs="+", help="adventure/outline markdown docs")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "world":
@@ -213,6 +217,12 @@ async def _main(argv: list[str] | None = None) -> None:
     elif args.cmd == "rules":
         n = await ingest_rules(_read(args.paths), args.ruleset)
         print(f"Ingested {n} rules chunks for ruleset {args.ruleset!r}")
+    elif args.cmd == "story":
+        from dm_agent.knowledge.story import build_story
+
+        campaign_id = await resolve_campaign(args.campaign)
+        stats = await build_story(campaign_id, _read(args.paths))
+        print(f"Built story guide for campaign {campaign_id}: {stats}")
 
 
 def main() -> None:

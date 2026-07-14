@@ -14,7 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, text
 
-from dm_agent.db import Campaign, Character, GameSession, db_session
+from dm_agent.db import Campaign, Character, GameSession, StoryBeat, db_session
 from dm_agent.main import app
 
 
@@ -40,6 +40,7 @@ async def client():
     async with db_session() as s:
         for cid in created:
             await s.execute(delete(Character).where(Character.campaign_id == cid))
+            await s.execute(delete(StoryBeat).where(StoryBeat.campaign_id == cid))
             await s.execute(delete(GameSession).where(GameSession.campaign_id == cid))
             await s.execute(delete(Campaign).where(Campaign.id == cid))
         await s.commit()
@@ -54,6 +55,7 @@ async def test_campaign_and_character_crud(client):
     created.append(uuid.UUID(camp["id"]))
     assert camp["name"] == "Test Realm"
     assert camp["has_world"] is False
+    assert camp["has_story"] is False
     assert camp["character_count"] == 0
     cid = camp["id"]
 
@@ -127,6 +129,26 @@ async def test_world_upload_validation(client):
     ).status_code == 422
 
 
+async def test_story_upload_validation(client):
+    c, created = client
+    r = await c.post("/api/campaigns", json={"name": "Guideless Realm"})
+    created.append(uuid.UUID(r.json()["id"]))
+    cid = r.json()["id"]
+    # whitespace-only doc -> 422 (nothing to build)
+    assert (
+        await c.post(f"/api/campaigns/{cid}/story", json={"documents": ["   "]})
+    ).status_code == 422
+    # empty list -> 422 (pydantic min_length)
+    assert (
+        await c.post(f"/api/campaigns/{cid}/story", json={"documents": []})
+    ).status_code == 422
+    # unknown campaign -> 404
+    assert (
+        await c.post(f"/api/campaigns/{uuid.uuid4()}/story", json={"documents": ["x"]})
+    ).status_code == 404
+
+
 async def test_unknown_job_404(client):
     c, _ = client
     assert (await c.get("/api/world-jobs/does-not-exist")).status_code == 404
+    assert (await c.get("/api/story-jobs/does-not-exist")).status_code == 404

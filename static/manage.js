@@ -66,14 +66,17 @@ function renderCampaignSelect() {
   if (activeCampaignId) sel.value = activeCampaignId;
 }
 
+function renderCampaignStatuses() {
+  const campaign = campaigns.find((c) => c.id === activeCampaignId);
+  el("world-status").textContent = campaign?.has_world ? "world loaded ✓" : "no world yet";
+  el("story-status").textContent = campaign?.has_story ? "guide loaded ✓" : "no guide yet";
+}
+
 async function selectCampaign(id) {
   activeCampaignId = id;
   localStorage.setItem(LS_CAMPAIGN, id);
   el("campaign-select").value = id;
-  const campaign = campaigns.find((c) => c.id === id);
-  el("world-status").textContent = campaign?.has_world
-    ? "world loaded ✓"
-    : "no world yet";
+  renderCampaignStatuses();
   await loadParty(id);
   const { session_id } = await api(`/api/campaigns/${id}/session`, { method: "POST" });
   window.Stage.connect(session_id);
@@ -225,68 +228,98 @@ function openCharacterModal(c) {
   }
 }
 
-// --- world upload ----------------------------------------------------------
+// --- uploads (world lore + story guide) ------------------------------------
+// Both flows are the same shape — paste/choose a doc, POST it, poll a job — so
+// they share one modal driven by this config.
 
-el("upload-world").addEventListener("click", openWorldModal);
+const UPLOADS = {
+  world: {
+    hasFlag: "has_world",
+    title: "Upload world lore",
+    intro: `Paste worldbuilding markdown. The build extracts a typed lore graph
+      (characters, locations, factions…), embeds it, and writes community
+      summaries. This can take a minute.`,
+    rebuildWarn: "already has a world — rebuilding replaces its lore graph",
+    placeholder: "# The Barony of Aldenmoor&#10;&#10;Duke Aldric Vane rules...",
+    post: (id) => `/api/campaigns/${id}/world`,
+    poll: (job) => `/api/world-jobs/${job}`,
+    building: "building… (extracting entities, embedding, clustering)",
+    done: (s) => `✓ built: ${s.nodes} nodes, ${s.edges} edges, ${s.communities} communities.`,
+  },
+  story: {
+    hasFlag: "has_story",
+    title: "Upload adventure guide",
+    intro: `Paste a pre-written adventure or your own outline. It's extracted into
+      an ordered set of advisory story beats the DM uses to pace the game — never
+      to script it. The party can always go off-book.`,
+    rebuildWarn: "already has a story guide — rebuilding replaces its beats",
+    placeholder: "# The Harvest Banquet&#10;&#10;Act 1: the party arrives at Vane Hall...",
+    post: (id) => `/api/campaigns/${id}/story`,
+    poll: (job) => `/api/story-jobs/${job}`,
+    building: "building… (extracting story beats)",
+    done: (s) => `✓ built: ${s.beats} story beats.`,
+  },
+};
 
-function openWorldModal() {
+el("upload-world").addEventListener("click", () => openUploadModal("world"));
+el("upload-story").addEventListener("click", () => openUploadModal("story"));
+
+function openUploadModal(kind) {
+  const cfg = UPLOADS[kind];
   const campaign = campaigns.find((c) => c.id === activeCampaignId);
-  const warn = campaign?.has_world
-    ? `<p class="muted">This campaign already has a world — rebuilding replaces its lore graph.</p>`
+  const warn = campaign?.[cfg.hasFlag]
+    ? `<p class="muted">This campaign ${cfg.rebuildWarn}.</p>`
     : "";
   openModal(`
-    <h2>Upload world lore</h2>
-    <p class="muted">Paste worldbuilding markdown. The build extracts a typed lore
-      graph (characters, locations, factions…), embeds it, and writes community
-      summaries. This can take a minute.</p>
+    <h2>${esc(cfg.title)}</h2>
+    <p class="muted">${cfg.intro}</p>
     ${warn}
-    <div class="field"><input id="w-file" type="file" accept=".md,.markdown,.txt"></div>
-    <div class="field"><textarea id="w-text" style="min-height:13rem"
-      placeholder="# The Barony of Aldenmoor&#10;&#10;Duke Aldric Vane rules..."></textarea></div>
+    <div class="field"><input id="u-file" type="file" accept=".md,.markdown,.txt"></div>
+    <div class="field"><textarea id="u-text" style="min-height:13rem"
+      placeholder="${cfg.placeholder}"></textarea></div>
     <div id="job-status"></div>
     <div class="modal-actions">
-      <button id="w-cancel" class="ghost">Cancel</button>
-      <button id="w-build">Build world</button>
+      <button id="u-cancel" class="ghost">Cancel</button>
+      <button id="u-build">Build</button>
     </div>`);
 
-  el("w-cancel").addEventListener("click", closeModal);
-  el("w-file").addEventListener("change", async (e) => {
+  el("u-cancel").addEventListener("click", closeModal);
+  el("u-file").addEventListener("change", async (e) => {
     const file = e.target.files[0];
-    if (file) el("w-text").value = await file.text();
+    if (file) el("u-text").value = await file.text();
   });
-  el("w-build").addEventListener("click", submitWorld);
+  el("u-build").addEventListener("click", () => submitUpload(kind));
 }
 
-async function submitWorld() {
-  const text = el("w-text").value.trim();
+async function submitUpload(kind) {
+  const cfg = UPLOADS[kind];
+  const text = el("u-text").value.trim();
   const jobStatus = el("job-status");
   if (!text) { jobStatus.textContent = "Paste or choose a document first."; return; }
-  const build = el("w-build");
+  const build = el("u-build");
   build.disabled = true;
   jobStatus.textContent = "starting build…";
 
   try {
-    const { job_id } = await api(`/api/campaigns/${activeCampaignId}/world`, {
+    const { job_id } = await api(cfg.post(activeCampaignId), {
       method: "POST",
       body: JSON.stringify({ documents: [text] }),
     });
 
     for (;;) {
       await new Promise((r) => setTimeout(r, 1500));
-      const job = await api(`/api/world-jobs/${job_id}`);
+      const job = await api(cfg.poll(job_id));
       if (job.status === "running") {
-        jobStatus.textContent = "building… (extracting entities, embedding, clustering)";
+        jobStatus.textContent = cfg.building;
         continue;
       }
       if (job.status === "done") {
-        const s = job.stats || {};
-        jobStatus.textContent =
-          `✓ built: ${s.nodes} nodes, ${s.edges} edges, ${s.communities} communities.`;
+        jobStatus.textContent = cfg.done(job.stats || {});
         build.textContent = "Done";
-        // Refresh has_world flags + sidebar.
+        // Refresh has_world/has_story flags + sidebar.
         campaigns = await api("/api/campaigns");
         renderCampaignSelect();
-        el("world-status").textContent = "world loaded ✓";
+        renderCampaignStatuses();
         return;
       }
       jobStatus.innerHTML = `<span class="error">✗ build failed: ${esc(job.error)}</span>`;

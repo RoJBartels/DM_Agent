@@ -7,6 +7,7 @@ across restarts.
 """
 
 import logging
+import uuid
 from typing import Any
 
 import anthropic
@@ -106,6 +107,15 @@ class Orchestrator:
         messages: list[dict[str, Any]] = [*game_session.history]
         messages.append({"role": "user", "content": player_text})
 
+        # Story guide (M2c, §2b): fetch the current beats once per turn and append
+        # them as an *uncached* system block after the cache-stable prefix. It
+        # changes as the story advances, so it must sit past the cache breakpoint;
+        # an empty guide adds nothing. Never let this break a turn.
+        system = _CACHED_SYSTEM
+        notes = await self._directors_notes(game_session.campaign_id)
+        if notes:
+            system = [*_CACHED_SYSTEM, {"type": "text", "text": notes}]
+
         await emit_and_log(TurnStart(turn_id=turn_id))
         try:
             for _ in range(MAX_TOOL_ITERATIONS):
@@ -113,7 +123,7 @@ class Orchestrator:
                     model=self.settings.narrator_model,
                     max_tokens=self.settings.narrator_max_tokens,
                     thinking={"type": "adaptive"},
-                    system=_CACHED_SYSTEM,
+                    system=system,
                     tools=TOOL_DEFINITIONS,
                     messages=messages,
                 ) as stream:
@@ -168,6 +178,17 @@ class Orchestrator:
             game_session.history = messages
             await emit_and_log(TurnEnd(turn_id=turn_id))
             await self._maybe_summarize_scene(game_session, messages)
+
+    async def _directors_notes(self, campaign_id: uuid.UUID) -> str:
+        """Current story-guide beats formatted as private director's notes, or ""
+        if the campaign has no guide. A failure here must never break a turn."""
+        try:
+            from dm_agent.knowledge.story import active_and_upcoming, format_directors_notes
+
+            return format_directors_notes(await active_and_upcoming(campaign_id))
+        except Exception:
+            log.exception("story-guide fetch failed for campaign %s", campaign_id)
+            return ""
 
     async def _maybe_summarize_scene(
         self, game_session: GameSession, messages: list[dict[str, Any]]
