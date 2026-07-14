@@ -22,9 +22,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Knowledge layer (M2+): embeddings + graph clustering. Heavy — install when needed.
+# sentence-transformers pulls in torch (~large); the rest are small. Embeddings are
+# behind an interface so code imports and tests run without torch present.
 knowledge = [
     "sentence-transformers>=3.3",
     "networkx>=3.4",
+    "igraph>=0.11",
+    "leidenalg>=0.10",
 ]
 
 [dependency-groups]
@@ -43,4 +47,8 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# One event loop for the whole session so the module-level async engine singleton
+# (db/engine.py) isn't reused across loops — the DB-backed tests share it.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]

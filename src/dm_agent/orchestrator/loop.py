@@ -26,14 +26,23 @@ scenes, voice NPCs, and adjudicate outcomes. The players act; the world reacts.
 Core principle: you narrate, the tools adjudicate. Everything mechanical goes through tools:
 - NEVER invent dice results, damage numbers, or check outcomes. Decide WHAT to roll \
 (e.g. "DC 15 Dexterity save"), call roll_dice, then narrate the result you got back.
+- When unsure which ability or skill governs an action, or how a rule resolves, call \
+lookup_rules before deciding — don't guess the mechanics.
+- Before inventing world facts (who someone is, what happened here, a faction's history, \
+a secret), call lookup_lore. It answers from established canon AND recent session events, \
+and recent events override canon on conflict — trust what it returns.
 - Apply damage, healing, and inventory changes with update_character_sheet immediately \
 after they happen in the fiction.
 - Record durable consequences (quest flags, opened gates, dead NPCs) with update_world_state.
 - Consult get_character_sheet instead of guessing stats or current HP.
 
+If lookup_lore reports no lore is on record, you are free to improvise the world — that is \
+expected for a fresh campaign.
+
 Narration style: second person, present tense, vivid but tight — usually 2 to 6 sentences \
 between player decisions. End each turn at a natural decision point, often with a question \
-or a clear prompt for what the players can do. Never decide for the players.
+or a clear prompt for what the players can do. Never decide for the players — offer \
+possibilities and let them choose, including choices you didn't suggest.
 """
 
 # Stable prefix for prompt caching: tools render first, then system. Keep both
@@ -41,6 +50,27 @@ or a clear prompt for what the players can do. Never decide for the players.
 _CACHED_SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
 MAX_TOOL_ITERATIONS = 12
+# Summarize the scene into the dynamic knowledge layer every N player turns.
+SUMMARIZE_EVERY = 3
+
+
+def _count_player_turns(messages: list[dict[str, Any]]) -> int:
+    return sum(1 for m in messages if m["role"] == "user" and isinstance(m["content"], str))
+
+
+def _render_transcript(messages: list[dict[str, Any]]) -> str:
+    """Flatten recent messages into a readable Player/DM transcript for summarizing.
+    Tool-use, tool-result, and thinking blocks are skipped."""
+    lines: list[str] = []
+    for m in messages:
+        content = m["content"]
+        if isinstance(content, str):
+            lines.append(f"Player: {content}")
+        elif isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                    lines.append(f"DM: {b['text']}")
+    return "\n".join(lines)
 
 
 def _make_client() -> anthropic.AsyncAnthropic:
@@ -137,3 +167,19 @@ class Orchestrator:
                     await s.commit()
             game_session.history = messages
             await emit_and_log(TurnEnd(turn_id=turn_id))
+            await self._maybe_summarize_scene(game_session, messages)
+
+    async def _maybe_summarize_scene(
+        self, game_session: GameSession, messages: list[dict[str, Any]]
+    ) -> None:
+        """Every SUMMARIZE_EVERY player turns, distill the recent scene into a
+        dynamic knowledge chunk. Never let a summarization failure break play."""
+        if _count_player_turns(messages) % SUMMARIZE_EVERY != 0:
+            return
+        transcript = _render_transcript(messages[-2 * SUMMARIZE_EVERY :])
+        try:
+            from dm_agent.knowledge.summarizer import summarize_scene
+
+            await summarize_scene(game_session.campaign_id, game_session.id, transcript)
+        except Exception:
+            log.exception("scene summarization failed for session %s", game_session.id)

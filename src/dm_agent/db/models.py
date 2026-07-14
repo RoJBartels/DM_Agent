@@ -2,9 +2,15 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Embedding dimension of the configured sentence-transformers model
+# (BAAI/bge-small-en-v1.5 = 384). Changing the model changes this and requires a
+# migration, so it lives here alongside the columns that use it.
+EMBED_DIM = 384
 
 
 class Base(DeclarativeBase):
@@ -70,3 +76,79 @@ class EventLog(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("game_sessions.id"))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     event: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+# --- Knowledge layer (M2): the hybrid static-canon graph + dynamic session RAG ---
+#
+# Lore is scoped per campaign (a campaign is a world). `id` is a human-readable
+# slug used as the join key in `entity_ids` arrays elsewhere — the composite PK
+# (campaign_id, id) keeps two campaigns' worlds from colliding on the same slug.
+# Edges reference node slugs softly (no FK): a build inserts nodes and edges in
+# any order, and an edge may point at a node the extractor named but didn't emit.
+
+
+class Node(Base):
+    __tablename__ = "nodes"
+
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True)  # slug
+    type: Mapped[str] = mapped_column(Text)  # Character/Location/Faction/Item/Deity/Event/Law
+    name: Mapped[str] = mapped_column(Text)
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    prose: Mapped[str] = mapped_column(Text, default="")  # the text that gets embedded
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+    community_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Edge(Base):
+    __tablename__ = "edges"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    src: Mapped[str] = mapped_column(Text)  # node slug
+    dst: Mapped[str] = mapped_column(Text)  # node slug
+    type: Mapped[str] = mapped_column(Text)  # RULES/LOCATED_IN/MEMBER_OF/ENEMY_OF/...
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class CommunitySummary(Base):
+    __tablename__ = "community_summaries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    community_id: Mapped[int] = mapped_column(Integer)
+    member_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+
+
+class DynamicChunk(Base):
+    """Session-history layer: Haiku scene summaries appended as play happens.
+
+    Joined to canon by `entity_ids` (node slugs). `campaign_id` is denormalized
+    from the session so lookup_lore can filter a campaign's chunks without a join.
+    """
+
+    __tablename__ = "dynamic_chunks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("game_sessions.id"))
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    text: Mapped[str] = mapped_column(Text)
+    entity_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+
+
+class RulesChunk(Base):
+    """Rules corpus (SRD 5.1 today). Separate from lore per §3; global, not
+    campaign-scoped. `ruleset_id` is forward-compat for M8 (constant 'dnd5e' now)."""
+
+    __tablename__ = "rules_chunks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ruleset_id: Mapped[str] = mapped_column(Text, default="dnd5e")
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)

@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     utility_model: str = "claude-haiku-4-5"
     narrator_max_tokens: int = 8192
 
+    # Knowledge layer (M2). Changing embedding_model may change the vector
+    # dimension (EMBED_DIM in db.models) and require a migration.
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    default_ruleset: str = "dnd5e"
+
 
 @lru_cache
 def get_settings() -> Settings:
