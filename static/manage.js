@@ -141,6 +141,9 @@ function characterFormHtml(c) {
     <div class="checkbox field">
       <input id="c-ispc" type="checkbox" ${c.is_pc === false ? "" : "checked"}>
       <label style="margin:0">Player character</label></div>
+    <div class="muted" style="margin:-0.55rem 0 0.85rem">
+      Checked = a hero a player controls (listed first in the party). Unchecked =
+      an NPC the DM voices.</div>
     <div class="grid">
       <div class="field"><label>Class</label>
         <input id="c-class" type="text" value="${esc(stats.class || "")}"></div>

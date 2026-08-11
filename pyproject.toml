@@ -18,13 +18,13 @@ dependencies = [
     "pgvector>=0.3",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-]
-
-[project.optional-dependencies]
-# Knowledge layer (M2+): embeddings + graph clustering. Heavy — install when needed.
-# sentence-transformers pulls in torch (~large); the rest are small. Embeddings are
-# behind an interface so code imports and tests run without torch present.
-knowledge = [
+    # Knowledge layer (M2+): embeddings + graph clustering. sentence-transformers
+    # pulls in torch (large, CPU-only), but the running server genuinely needs it —
+    # lookup_lore/lookup_rules and the world build all embed in-process, so this is a
+    # real runtime dependency, not an optional extra (it broke lore during play when
+    # left optional). Code + tests still stay torch-free at the source level via the
+    # EmbeddingProvider interface + a fake embedder; torch is only imported the first
+    # time a real embedding is requested.
     "sentence-transformers>=3.3",
     "networkx>=3.4",
     "igraph>=0.11",

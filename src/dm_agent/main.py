@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 from dm_agent.api import router as api_router
 from dm_agent.db import GameSession, db_session
 from dm_agent.events import ErrorEvent, Event, PlayerAction
+from dm_agent.knowledge.embeddings import embeddings_available
 from dm_agent.orchestrator import Orchestrator
 from dm_agent.seed import ensure_demo_session
 
@@ -19,7 +21,19 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
 
-app = FastAPI(title="DM Agent")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not embeddings_available():
+        log.warning(
+            "Embeddings backend not installed — lore & rules retrieval will be "
+            "DISABLED this run (the DM will improvise blind). Run `uv sync` and "
+            "restart to enable it."
+        )
+    yield
+
+
+app = FastAPI(title="DM Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(api_router)
 

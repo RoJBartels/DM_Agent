@@ -13,12 +13,22 @@ from sqlalchemy import select, text
 
 from dm_agent.config import get_settings
 from dm_agent.db import RulesChunk, db_session
-from dm_agent.knowledge.embeddings import get_embedder
+from dm_agent.knowledge.embeddings import embeddings_available, get_embedder
 from dm_agent.knowledge.retrieval import lookup_lore as _lookup_lore
 from dm_agent.tools.base import Tool, ToolContext
 
+# Shown to the narrator when the embedding backend is missing: lore/rules retrieval
+# can't run, but the turn must not fail — tell the model to fall back gracefully.
+_NO_EMBEDDINGS = (
+    "Retrieval is unavailable right now (the embeddings backend isn't installed on "
+    "the server), so this lookup can't run. Narrate from D&D 5e SRD knowledge and "
+    "what's already established in the conversation; don't invent hard canon."
+)
+
 
 async def _lookup_rules(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if not embeddings_available():
+        return _NO_EMBEDDINGS
     query = args["query"]
     ruleset = get_settings().default_ruleset
     qvec = get_embedder().embed_one(query)
@@ -40,6 +50,8 @@ async def _lookup_rules(ctx: ToolContext, args: dict[str, Any]) -> str:
 
 
 async def _lookup_lore_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if not embeddings_available():
+        return _NO_EMBEDDINGS
     answer = await _lookup_lore(ctx.campaign_id, args["question"])
     if answer.source_ids:
         return f"{answer.text}\n\n(sources: {', '.join(answer.source_ids)})"

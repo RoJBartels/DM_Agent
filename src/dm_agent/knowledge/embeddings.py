@@ -11,11 +11,24 @@ pgvector `<=>` (cosine) queries in `store.py` behave consistently.
 
 from __future__ import annotations
 
+import importlib.util
 from functools import lru_cache
 from typing import Protocol
 
 from dm_agent.config import get_settings
 from dm_agent.db import EMBED_DIM
+
+
+class EmbeddingsUnavailable(RuntimeError):
+    """Raised when a real embedding is requested but sentence-transformers/torch
+    isn't importable. Callers (the lore/rules tools) turn this into a clear,
+    non-fatal message instead of crashing the turn."""
+
+
+def embeddings_available() -> bool:
+    """True if the embedding backend can be imported. Cheap — checks the module
+    spec without importing torch."""
+    return importlib.util.find_spec("sentence_transformers") is not None
 
 
 class EmbeddingProvider(Protocol):
@@ -44,7 +57,14 @@ class SentenceTransformerEmbedder:
 
     def _load(self):
         if self._model is None:
-            from sentence_transformers import SentenceTransformer  # heavy: torch
+            try:
+                from sentence_transformers import SentenceTransformer  # heavy: torch
+            except ImportError as e:
+                raise EmbeddingsUnavailable(
+                    "Embeddings backend not installed (sentence-transformers/torch). "
+                    "Lore and rules retrieval need it. Run `uv sync` (it's a project "
+                    "dependency now) and restart."
+                ) from e
 
             self._model = SentenceTransformer(self.model_name)
             # method was renamed get_sentence_embedding_dimension -> get_embedding_dimension
