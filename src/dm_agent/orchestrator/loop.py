@@ -14,7 +14,7 @@ import anthropic
 from sqlalchemy import select
 
 from dm_agent.config import get_settings
-from dm_agent.db import Character, EventLog, GameSession, db_session
+from dm_agent.db import Campaign, Character, EventLog, GameSession, db_session
 from dm_agent.events import Event, NarrationDelta, TurnEnd, TurnStart
 from dm_agent.tools import TOOL_DEFINITIONS, TOOLS_BY_NAME, ToolContext
 from dm_agent.tools.base import EmitFn
@@ -42,7 +42,10 @@ them look, ask, and think as long as they like.
 
 Core principle: you narrate, the tools adjudicate. Everything mechanical goes through tools:
 - NEVER invent dice results, damage numbers, or check outcomes. Decide WHAT to roll \
-(e.g. "DC 15 Dexterity save"), call roll_dice, then narrate the result you got back.
+(e.g. "DC 15 Dexterity save"), call roll_dice, then narrate the result you got back. For a \
+check against a target number, pass its dc so the engine judges success/failure/critical — \
+narrate the verdict it returns, don't re-decide it — and itemize the modifier in breakdown so \
+the player can see where their bonuses and penalties come from.
 - When unsure which ability or skill governs an action, or how a rule resolves, call \
 lookup_rules before deciding — don't guess the mechanics.
 - Before inventing world facts (who someone is, what happened here, a faction's history, \
@@ -75,6 +78,22 @@ _CACHED_SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"typ
 MAX_TOOL_ITERATIONS = 12
 # Summarize the scene into the dynamic knowledge layer every N player turns.
 SUMMARIZE_EVERY = 3
+
+# Opt-in softening of the agency rule (M2g), injected as an uncached per-turn block
+# only when a campaign turns the setting on. It narrows the "offer and wait" step for
+# obviously-safe actions but never touches the hard guardrails: questions never advance
+# the fiction, and nothing consequential is ever resolved without the player's say-so.
+AUTO_RESOLVE_NOTE = (
+    "[Campaign setting — auto-resolve simple actions is ON. For a CLEARLY trivial, safe, "
+    "unambiguous action with no stakes (opening an unlocked ordinary door, picking up a loose "
+    "object within reach, stepping to an obvious adjacent spot, lighting a torch), you may just "
+    "narrate the result instead of stopping to offer and wait. Everything else is unchanged: "
+    "never auto-resolve anything consequential or risky — combat, casting, spending or handing "
+    "over resources, a locked/trapped/dangerous door, anything a roll or a real decision hinges "
+    "on — offer it and wait as usual. A QUESTION still never advances the fiction: answer it and "
+    "stop. This only removes the offer-and-wait step for the obviously safe; it never lets you "
+    "decide a hero's meaningful choices for them.]"
+)
 
 
 def format_party_roster(chars: list[Character]) -> str:
@@ -162,6 +181,7 @@ class Orchestrator:
             for b in (
                 await self._party_roster(game_session.campaign_id),
                 await self._directors_notes(game_session.campaign_id),
+                await self._auto_resolve_note(game_session.campaign_id),
             )
             if b
         ]
@@ -247,6 +267,19 @@ class Orchestrator:
             return format_party_roster(chars)
         except Exception:
             log.exception("party-roster fetch failed for campaign %s", campaign_id)
+            return ""
+
+    async def _auto_resolve_note(self, campaign_id: uuid.UUID) -> str:
+        """The auto-resolve softening (M2g) if this campaign opted in, else "".
+        Off by default; a fetch failure never breaks a turn (falls back to the
+        stricter default agency behavior)."""
+        try:
+            async with db_session() as s:
+                campaign = await s.get(Campaign, campaign_id)
+                on = bool(campaign and (campaign.settings or {}).get("auto_resolve_simple"))
+            return AUTO_RESOLVE_NOTE if on else ""
+        except Exception:
+            log.exception("auto-resolve setting fetch failed for campaign %s", campaign_id)
             return ""
 
     async def _directors_notes(self, campaign_id: uuid.UUID) -> str:

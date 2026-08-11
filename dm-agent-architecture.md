@@ -1,6 +1,6 @@
 # Dungeon Master Agent — Architecture Reference (v1, locked)
 
-**Status:** Global architecture agreed and locked. **Addendum 2026-07-12** (post first play session): §2b (story/adventure guide) added and decided. **Addendum 2026-08-11** (second play session): player agency elevated to a core principle below; embeddings noted as a required runtime dependency (§8); build order (§9) gains M2d/M2e. Neither addendum reopens any prior decision.
+**Status:** Global architecture agreed and locked. **Addendum 2026-07-12** (post first play session): §2b (story/adventure guide) added and decided. **Addendum 2026-08-11** (second play session): player agency elevated to a core principle below; embeddings noted as a required runtime dependency (§8); build order (§9) gains M2d/M2e. **Addendum 2026-08-11b** (deferred playtest trio, built): the `dice_roll` event now carries the check verdict (§6); a `campaigns.settings` blob backs an optional per-campaign auto-resolve toggle (§8); build order (§9) gains M2f/M2g/M2h. No addendum reopens any prior decision.
 **Core design principle:** *The LLM narrates, code adjudicates.* Everything mechanical (dice, HP, DCs, combat math) is handled by deterministic tools — never by the LLM.
 **Player agency is absolute (core principle):** the players decide; the DM never decides for them. It answers a player's questions and describes the world *without advancing the fiction*, and never has a player's character take a consequential action the player didn't declare — it offers options and waits. The world moves only in response to a declared action (or a danger already in motion the player knows about). This binds every layer and milestone below (enforced today in the orchestrator system prompt; must survive party play, NPC subagents, and the story guide — which is advisory, never scripting).
 
@@ -156,6 +156,8 @@ When a player addresses an NPC, the orchestrator spawns a **scoped subagent**:
 The narration model's output is an **event stream, not just text**: prose tokens interleaved with typed events —
 `sfx`, `ambience`, `effect`, `visual`, `map_update` — delivered to the client over a websocket. The rules engine emits events too (dice results, damage numbers). The frontend is a small **stage** that renders the stream, not a chat window.
 
+*Addendum 2026-08-11b (M2h — legible dice):* the `dice_roll` event was widened so the stage can render a result the player reads at a glance instead of inferring from prose. Beyond `expression`/`rolls`/`total` it now carries (all optional-defaulted, so damage rolls and older logged events still render): `modifier`, `kept`/`dropped` (which die survived advantage/disadvantage), `dc`, `outcome` (`success`|`failure`|`critical_success`|`critical_failure`), and an itemized `breakdown` of modifier sources. Consistent with *code adjudicates*: the engine computes `outcome` (via `check_outcome`, mirroring `check()`), the chip shows it, and the tool-result string states the same verdict so narration can't disagree. M3's cosmetic dice animation animates this same event — no new plumbing, just richer content to animate.
+
 ---
 
 ## 7. Background Workflows (n8n — optional, not v1)
@@ -181,6 +183,7 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 | Knowledge graph | **Open** — see §2 |
 | Rules corpus | SRD 5.1 |
 | Story guide | Optional per campaign, `story_beats` table — see §2b |
+| Campaign settings | `campaigns.settings` JSONB blob (default `{}`); per-campaign prefs with no migration per toggle. Today: `auto_resolve_simple` (M2g, off by default) — see §9 |
 | Frontend | Web stage (websocket event stream); Discord bot as natural TTRPG channel |
 | Hosting | Fly.io / Railway for prototype |
 
@@ -191,7 +194,8 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 1. **Core loop:** text narration + dice + character sheets + structured state
 2. **Knowledge layer:** static graph build + dynamic RAG + `lookup_lore` with recency-override, plus optional story-guide ingestion (§2b)
    - **Management & play UX** (added from play sessions; stage + small server additions, no new architecture): campaign/character CRUD + world/adventure upload *(done)*; **M2d** — start menu + visible history on reconnect (session state already persists; the on-screen transcript is replayed, display-only); **M2e** — multi-character party play (party roster injected into the per-turn context + the player picks which character acts). Both bound by the player-agency principle above.
-3. **SFX/ambience:** event stream + tagged asset library *(huge immersion win, tiny effort — just tag matching)*
+   - **Deferred playtest trio** (built 2026-08-11; stage + small server, still no new architecture): **M2f** — world/5e-aligned character creator that *augments* (never replaces) the free-form form: SRD class/ability/proficiency helpers + optional lore-entity pick-lists from the §2 graph (new `lore-nodes` read endpoint); 5e hardcoded on purpose, M8 generalizes later. **M2g** — optional per-campaign "auto-resolve simple actions" toggle (`campaigns.settings`, off by default); softens *offer-and-wait* only for trivially safe actions, never questions or consequential ones — additive to player agency, not a rollback. **M2h** — legible dice results: surface the check verdict the engine already computes (§6).
+3. **SFX/ambience:** event stream + tagged asset library *(huge immersion win, tiny effort — just tag matching)* — the cosmetic dice pass animates the §6 `dice_roll` event, now legible after M2h.
 4. **Combat + maps:** `manage_combat` + `generate_map` renderer sharing coordinates
 5. **NPC subagents** with scoped knowledge
 6. **Map effect overlays**, then **live sketching** (`visualize`)

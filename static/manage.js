@@ -6,6 +6,40 @@
 const ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
 const LS_CAMPAIGN = "dm.campaign";
 
+// --- SRD 5e helpers for the character creator (M2f) ------------------------
+// Hardcoded 5e on purpose — the M8 multi-ruleset pass generalizes this later.
+// The creator only *augments* the free-form form; every field stays editable.
+const SRD_CLASSES = {
+  Barbarian: ["STR", "CON"], Bard: ["DEX", "CHA"], Cleric: ["WIS", "CHA"],
+  Druid: ["INT", "WIS"], Fighter: ["STR", "CON"], Monk: ["STR", "DEX"],
+  Paladin: ["WIS", "CHA"], Ranger: ["STR", "DEX"], Rogue: ["DEX", "INT"],
+  Sorcerer: ["CON", "CHA"], Warlock: ["WIS", "CHA"], Wizard: ["INT", "WIS"],
+};
+const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+const POINT_BUY_COST = { 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 };
+const POINT_BUY_BUDGET = 27;
+// World-aligned pick-lists: which lore node type feeds each character field.
+const WORLD_ROLES = [
+  { key: "faction", label: "Faction", type: "Faction" },
+  { key: "home", label: "Home", type: "Location" },
+  { key: "deity", label: "Patron", type: "Deity" },
+];
+
+const abilMod = (s) => Math.floor((Number(s) - 10) / 2);
+const fmtMod = (m) => (m > 0 ? `+${m}` : m < 0 ? `−${Math.abs(m)}` : "0");
+const profForLevel = (lvl) => 2 + Math.floor((Math.max(1, Number(lvl) || 1) - 1) / 4);
+
+function matchSrdClass(name) {
+  const n = String(name || "").trim().toLowerCase();
+  return Object.keys(SRD_CLASSES).find((k) => k.toLowerCase() === n) || null;
+}
+
+function roll4d6DropLowest() {
+  const d = [0, 0, 0, 0].map(() => 1 + Math.floor(Math.random() * 6));
+  d.sort((a, b) => a - b);
+  return d[1] + d[2] + d[3];
+}
+
 const el = (id) => document.getElementById(id);
 const overlay = el("overlay");
 const modal = el("modal");
@@ -163,6 +197,7 @@ function renderStartDetail() {
         )
         .join("")}</div>`
     : `<div class="muted">No characters yet.</div>`;
+  const autoResolve = c.settings && c.settings.auto_resolve_simple;
   detail.innerHTML = `
     <h2>${esc(c.name)}</h2>
     ${roster}
@@ -170,10 +205,21 @@ function renderStartDetail() {
       <button data-add class="ghost small">＋ Character</button>
       <button data-up="world" class="ghost small">⇪ World lore</button>
       <button data-up="story" class="ghost small">⇪ Adventure</button>
-    </div>`;
+    </div>
+    <label class="setting">
+      <input type="checkbox" data-setting="auto_resolve_simple" ${autoResolve ? "checked" : ""}>
+      <span>Auto-resolve trivial actions
+        <span class="muted">— the DM may just do obviously-safe things (open an unlocked
+        door, pick up a loose item) instead of asking first. Off by default; it still
+        never decides your meaningful choices, and questions never advance the story.</span>
+      </span>
+    </label>`;
   detail.querySelector("[data-add]").addEventListener("click", () => openCharacterModal(null));
   detail.querySelector('[data-up="world"]').addEventListener("click", () => openUploadModal("world"));
   detail.querySelector('[data-up="story"]').addEventListener("click", () => openUploadModal("story"));
+  detail.querySelector('[data-setting="auto_resolve_simple"]').addEventListener("change", (e) => {
+    updateCampaignSetting("auto_resolve_simple", e.target.checked);
+  });
   for (const span of detail.querySelectorAll(".rname")) {
     span.addEventListener("click", () => {
       const ch = party.find((m) => m.id === span.dataset.cid);
@@ -182,6 +228,24 @@ function renderStartDetail() {
   }
   play.disabled = false;
   play.textContent = c.has_history ? "▶ Continue" : "▶ Begin";
+}
+
+// Persist a single per-campaign setting (M2g). settings is stored as one blob, so
+// merge onto the current copy and PATCH the whole object back.
+async function updateCampaignSetting(key, value) {
+  if (!activeCampaignId) return;
+  const c = campaigns.find((x) => x.id === activeCampaignId);
+  const settings = { ...((c && c.settings) || {}), [key]: value };
+  try {
+    const updated = await api(`/api/campaigns/${activeCampaignId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ settings }),
+    });
+    if (c) Object.assign(c, updated);
+  } catch (err) {
+    alert(`Couldn't save setting — ${err.message}`);
+    renderStartDetail(); // revert the checkbox to the stored value
+  }
 }
 
 // --- party -----------------------------------------------------------------
@@ -216,14 +280,42 @@ function renderParty(chars) {
 
 el("add-character").addEventListener("click", () => openCharacterModal(null));
 
-function characterFormHtml(c) {
+// Optional world-aligned pick-lists (M2f): dropdowns for Faction / Home / Patron,
+// populated from the campaign's lore graph. Only roles with lore entries render;
+// a value the player typed earlier that isn't in the lore stays selectable.
+function worldPickHtml(lore, stats) {
+  const rows = WORLD_ROLES.map((r) => {
+    const opts = lore[r.type] || [];
+    const current = stats[r.key] || "";
+    if (!opts.length && !current) return "";
+    const options = ['<option value="">(none)</option>'];
+    for (const n of opts) {
+      const sel = n.name === current ? " selected" : "";
+      options.push(`<option value="${esc(n.name)}"${sel}>${esc(n.name)}</option>`);
+    }
+    if (current && !opts.some((n) => n.name === current)) {
+      options.push(`<option value="${esc(current)}" selected>${esc(current)} (custom)</option>`);
+    }
+    return `<div class="field"><label>${r.label}</label>
+      <select id="c-world-${r.key}">${options.join("")}</select></div>`;
+  }).filter(Boolean);
+  if (!rows.length) return "";
+  return `<div class="field"><label>From the world</label>
+    <div class="grid">${rows.join("")}</div>
+    <div class="muted" style="margin-top:0.3rem">Optional — tie this character into the
+      campaign's lore. Anything free-form still goes in Notes.</div></div>`;
+}
+
+function characterFormHtml(c, lore) {
   c = c || {};
   const stats = c.stats || {};
   const abilInputs = ABILITIES.map(
     (k) =>
-      `<div><label style="text-align:center">${k}</label>` +
-      `<input id="c-${k}" type="number" value="${stats[k] ?? 10}"></div>`
+      `<div class="abil"><label>${k}</label>` +
+      `<input id="c-${k}" type="number" value="${stats[k] ?? 10}">` +
+      `<span class="abil-mod" id="mod-${k}"></span></div>`
   ).join("");
+  const classOptions = Object.keys(SRD_CLASSES).map((n) => `<option value="${n}">`).join("");
   return `
     <h2>${c.id ? "Edit character" : "New character"}</h2>
     <div class="field"><label>Name</label>
@@ -236,14 +328,22 @@ function characterFormHtml(c) {
       an NPC the DM voices.</div>
     <div class="grid">
       <div class="field"><label>Class</label>
-        <input id="c-class" type="text" value="${esc(stats.class || "")}"></div>
+        <input id="c-class" type="text" list="srd-classes" value="${esc(stats.class || "")}">
+        <datalist id="srd-classes">${classOptions}</datalist></div>
       <div class="field"><label>Level</label>
         <input id="c-level" type="number" value="${stats.level ?? 1}"></div>
       <div class="field"><label>Prof. bonus</label>
         <input id="c-prof" type="number" value="${stats.proficiency_bonus ?? 2}"></div>
     </div>
+    <div class="muted" id="c-saves" style="margin:-0.4rem 0 0.85rem"></div>
+    ${worldPickHtml(lore, stats)}
     <div class="field"><label>Ability scores</label>
-      <div class="grid6">${abilInputs}</div></div>
+      <div class="grid6">${abilInputs}</div>
+      <div class="abil-tools">
+        <button type="button" id="c-std" class="ghost small">Standard array</button>
+        <button type="button" id="c-roll" class="ghost small">Roll 4d6</button>
+        <span class="muted" id="pb-status"></span>
+      </div></div>
     <div class="grid">
       <div class="field"><label>AC</label>
         <input id="c-ac" type="number" value="${c.ac ?? 10}"></div>
@@ -263,10 +363,57 @@ function characterFormHtml(c) {
     </div>`;
 }
 
-function openCharacterModal(c) {
+// Live-update the derived readouts as the form is edited: ability modifiers, the
+// point-buy budget, and the class's saving-throw proficiencies.
+function refreshDerived() {
+  for (const k of ABILITIES) {
+    const span = el(`mod-${k}`);
+    if (span) span.textContent = fmtMod(abilMod(el(`c-${k}`).value));
+  }
+  const pb = el("pb-status");
+  if (pb) {
+    let total = 0;
+    let valid = true;
+    for (const k of ABILITIES) {
+      const v = parseInt(el(`c-${k}`).value, 10);
+      if (!(v in POINT_BUY_COST)) { valid = false; break; }
+      total += POINT_BUY_COST[v];
+    }
+    if (!valid) {
+      pb.textContent = "point-buy: scores 8–15";
+      pb.classList.remove("over");
+    } else {
+      pb.textContent = `point-buy: ${total}/${POINT_BUY_BUDGET}`;
+      pb.classList.toggle("over", total > POINT_BUY_BUDGET);
+    }
+  }
+  const saves = el("c-saves");
+  if (saves) {
+    const cls = matchSrdClass(el("c-class").value);
+    saves.textContent = cls ? `${cls} saving throws: ${SRD_CLASSES[cls].join(", ")}` : "";
+  }
+}
+
+async function openCharacterModal(c) {
   const existingStats = (c && c.stats) || {};
-  openModal(characterFormHtml(c));
+  const lore = await fetchLoreForCreator();
+  openModal(characterFormHtml(c, lore));
+  refreshDerived();
+
   el("c-cancel").addEventListener("click", closeModal);
+  for (const k of ABILITIES) el(`c-${k}`).addEventListener("input", refreshDerived);
+  el("c-class").addEventListener("input", refreshDerived);
+  el("c-level").addEventListener("input", () => {
+    el("c-prof").value = profForLevel(el("c-level").value); // auto-derive; still editable
+  });
+  el("c-std").addEventListener("click", () => {
+    ABILITIES.forEach((k, i) => { el(`c-${k}`).value = STANDARD_ARRAY[i]; });
+    refreshDerived();
+  });
+  el("c-roll").addEventListener("click", () => {
+    for (const k of ABILITIES) el(`c-${k}`).value = roll4d6DropLowest();
+    refreshDerived();
+  });
 
   el("c-save").addEventListener("click", async () => {
     const name = el("c-name").value.trim();
@@ -282,6 +429,16 @@ function openCharacterModal(c) {
     stats.level = num("c-level", 1);
     stats.proficiency_bonus = num("c-prof", 2);
     for (const k of ABILITIES) stats[k] = num(`c-${k}`, 10);
+    // Prefill class saving-throw proficiencies for a recognized SRD class (M2f).
+    const cls = matchSrdClass(stats.class);
+    if (cls) stats.save_proficiencies = SRD_CLASSES[cls];
+    // World-aligned picks write into stats; clearing one removes the key.
+    for (const r of WORLD_ROLES) {
+      const sel = el(`c-world-${r.key}`);
+      if (!sel) continue;
+      const v = sel.value.trim();
+      if (v) stats[r.key] = v; else delete stats[r.key];
+    }
 
     const body = {
       name,
@@ -319,6 +476,21 @@ function openCharacterModal(c) {
       await loadParty(activeCampaignId);
     });
   }
+}
+
+// Lore entities for the creator's world-aligned pick-lists (M2f), grouped by type.
+// Empty (all groups) when the campaign has no world or the fetch fails.
+async function fetchLoreForCreator() {
+  const grouped = { Faction: [], Location: [], Deity: [] };
+  const camp = campaigns.find((c) => c.id === activeCampaignId);
+  if (!camp || !camp.has_world) return grouped;
+  try {
+    const nodes = await api(
+      `/api/campaigns/${activeCampaignId}/lore-nodes?types=Faction,Location,Deity`
+    );
+    for (const n of nodes) if (grouped[n.type]) grouped[n.type].push(n);
+  } catch (_) { /* best-effort — creator still works without lore */ }
+  return grouped;
 }
 
 // --- uploads (world lore + story guide) ------------------------------------

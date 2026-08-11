@@ -21,12 +21,28 @@ class NarrationDelta(BaseModel):
     text: str
 
 
+class ModifierSource(BaseModel):
+    """One itemized piece of a roll's modifier, so the player sees where a bonus or
+    penalty came from (e.g. source='DEX', value=3). Part of a DiceRoll (M2h)."""
+
+    source: str
+    value: int
+
+
 class DiceRoll(BaseModel):
     type: Literal["dice_roll"] = "dice_roll"
     expression: str
     rolls: list[int]
     total: int
     purpose: str = ""
+    # M2h — optional, defaulted so damage rolls and pre-M2h clients still render.
+    # A roll with `dc` set is a check; `outcome` is the engine's authoritative verdict.
+    modifier: int = 0
+    kept: list[int] | None = None  # dice that counted (advantage keeps one d20)
+    dropped: list[int] | None = None  # dice discarded by advantage/disadvantage
+    dc: int | None = None
+    outcome: str | None = None  # success | failure | critical_success | critical_failure
+    breakdown: list[ModifierSource] | None = None
 
 
 class StateUpdate(BaseModel):

@@ -14,7 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select, text
 
-from dm_agent.db import Campaign, Character, EventLog, GameSession, StoryBeat, db_session
+from dm_agent.db import Campaign, Character, Edge, EventLog, GameSession, Node, StoryBeat, db_session
 from dm_agent.main import app
 
 
@@ -41,6 +41,8 @@ async def client():
         for cid in created:
             await s.execute(delete(Character).where(Character.campaign_id == cid))
             await s.execute(delete(StoryBeat).where(StoryBeat.campaign_id == cid))
+            await s.execute(delete(Edge).where(Edge.campaign_id == cid))
+            await s.execute(delete(Node).where(Node.campaign_id == cid))
             # EventLog references sessions (FK) — delete it before the sessions.
             sess_ids = (
                 await s.execute(select(GameSession.id).where(GameSession.campaign_id == cid))
@@ -63,6 +65,7 @@ async def test_campaign_and_character_crud(client):
     assert camp["has_world"] is False
     assert camp["has_story"] is False
     assert camp["has_history"] is False
+    assert camp["settings"] == {}
     assert camp["character_count"] == 0
     cid = camp["id"]
 
@@ -112,6 +115,62 @@ async def test_campaign_and_character_crud(client):
     assert r.status_code == 204
     r = await c.get(f"/api/campaigns/{cid}/characters")
     assert r.json() == []
+
+
+async def test_campaign_settings_patch(client):
+    """M2g: the auto-resolve toggle round-trips through PATCH and the list, and a
+    rename leaves settings untouched when not sent."""
+    c, created = client
+    r = await c.post("/api/campaigns", json={"name": "Settings Realm"})
+    cid = r.json()["id"]
+    created.append(uuid.UUID(cid))
+    assert r.json()["settings"] == {}
+
+    r = await c.patch(f"/api/campaigns/{cid}", json={"settings": {"auto_resolve_simple": True}})
+    assert r.status_code == 200
+    assert r.json()["settings"]["auto_resolve_simple"] is True
+
+    row = next(x for x in (await c.get("/api/campaigns")).json() if x["id"] == cid)
+    assert row["settings"]["auto_resolve_simple"] is True
+
+    # rename only — settings must survive an unset field
+    r = await c.patch(f"/api/campaigns/{cid}", json={"name": "Renamed Realm"})
+    assert r.json()["name"] == "Renamed Realm"
+    assert r.json()["settings"]["auto_resolve_simple"] is True
+
+    assert (await c.patch(f"/api/campaigns/{uuid.uuid4()}", json={"name": "x"})).status_code == 404
+
+
+async def test_lore_nodes_listing(client):
+    """M2f: the creator's world-aligned pick-lists read lore nodes by type."""
+    c, created = client
+    r = await c.post("/api/campaigns", json={"name": "Lore Realm"})
+    cid = uuid.UUID(r.json()["id"])
+    created.append(cid)
+
+    # No world yet → empty list, not an error.
+    assert (await c.get(f"/api/campaigns/{cid}/lore-nodes")).json() == []
+
+    async with db_session() as s:
+        s.add_all(
+            [
+                Node(campaign_id=cid, id="order-x", type="Faction", name="Order of X", props={}, prose=""),
+                Node(campaign_id=cid, id="ravenkeep", type="Location", name="Ravenkeep", props={}, prose=""),
+                Node(campaign_id=cid, id="duke", type="Character", name="Duke Aldric", props={}, prose=""),
+            ]
+        )
+        await s.commit()
+
+    all_nodes = (await c.get(f"/api/campaigns/{cid}/lore-nodes")).json()
+    assert {n["type"] for n in all_nodes} == {"Faction", "Location", "Character"}
+    assert all(set(n) == {"id", "type", "name"} for n in all_nodes)
+
+    filtered = (
+        await c.get(f"/api/campaigns/{cid}/lore-nodes?types=Faction,Location")
+    ).json()
+    assert {n["name"] for n in filtered} == {"Order of X", "Ravenkeep"}
+
+    assert (await c.get(f"/api/campaigns/{uuid.uuid4()}/lore-nodes")).status_code == 404
 
 
 async def test_unknown_campaign_404(client):

@@ -46,6 +46,13 @@ class CampaignOut(BaseModel):
     has_world: bool
     has_story: bool
     has_history: bool  # latest play has a transcript → the start menu offers "Continue"
+    settings: dict[str, Any] = Field(default_factory=dict)  # per-campaign prefs (M2g)
+
+
+class CampaignPatch(BaseModel):
+    # All optional: a PATCH updates only the fields it carries.
+    name: str | None = Field(default=None, min_length=1)
+    settings: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -197,6 +204,14 @@ def reconstruct_transcript(
                         "rolls": ev.get("rolls", []),
                         "total": ev.get("total"),
                         "purpose": ev.get("purpose", ""),
+                        # M2h — carried through so a replayed chip reads identically to
+                        # the live one. Absent on pre-M2h logged events (chip degrades).
+                        "modifier": ev.get("modifier", 0),
+                        "kept": ev.get("kept"),
+                        "dropped": ev.get("dropped"),
+                        "dc": ev.get("dc"),
+                        "outcome": ev.get("outcome"),
+                        "breakdown": ev.get("breakdown"),
                     }
                 )
             elif ev["type"] == "state_update":
@@ -253,6 +268,7 @@ async def list_campaigns() -> list[CampaignOut]:
             has_world=c.id in world_campaigns,
             has_story=c.id in story_campaigns,
             has_history=c.id in played_campaigns,
+            settings=c.settings or {},
         )
         for c in campaigns
     ]
@@ -273,6 +289,59 @@ async def create_campaign(body: CampaignIn) -> CampaignOut:
         has_world=False,
         has_story=False,
         has_history=False,
+        settings=campaign.settings or {},
+    )
+
+
+@router.patch("/campaigns/{campaign_id}", response_model=CampaignOut)
+async def update_campaign(campaign_id: uuid.UUID, body: CampaignPatch) -> CampaignOut:
+    """Rename a campaign and/or replace its settings blob (M2g auto-resolve toggle,
+    future per-campaign prefs). settings is replaced wholesale — the client sends the
+    full object it wants stored."""
+    async with db_session() as s:
+        campaign = await _get_campaign(s, campaign_id)
+        data = body.model_dump(exclude_unset=True)
+        if "name" in data:
+            campaign.name = data["name"].strip()
+        if "settings" in data:
+            campaign.settings = data["settings"]
+        await s.commit()
+        await s.refresh(campaign)
+
+        char_count = (
+            await s.execute(
+                select(func.count())
+                .select_from(Character)
+                .where(Character.campaign_id == campaign_id)
+            )
+        ).scalar_one()
+        has_world = (
+            await s.execute(
+                select(Node.campaign_id).where(Node.campaign_id == campaign_id).limit(1)
+            )
+        ).first() is not None
+        has_story = (
+            await s.execute(
+                select(StoryBeat.campaign_id).where(StoryBeat.campaign_id == campaign_id).limit(1)
+            )
+        ).first() is not None
+        has_history = (
+            await s.execute(
+                select(GameSession.campaign_id)
+                .where(GameSession.campaign_id == campaign_id)
+                .where(func.jsonb_array_length(GameSession.history) > 0)
+                .limit(1)
+            )
+        ).first() is not None
+    return CampaignOut(
+        id=campaign.id,
+        name=campaign.name,
+        created_at=campaign.created_at,
+        character_count=char_count,
+        has_world=has_world,
+        has_story=has_story,
+        has_history=has_history,
+        settings=campaign.settings or {},
     )
 
 
@@ -284,6 +353,21 @@ async def campaign_session(campaign_id: uuid.UUID) -> SessionOut:
         session = await get_or_create_session(s, campaign_id)
         await s.commit()
         return SessionOut(session_id=session.id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/lore-nodes")
+async def lore_nodes(campaign_id: uuid.UUID, types: str | None = None) -> list[dict[str, str]]:
+    """List a campaign's lore entities (id/type/name) for the character creator's
+    world-aligned pick-lists (M2f). Optionally filter to a comma-separated set of
+    node types, e.g. ?types=Faction,Location,Deity. Empty when no world is built."""
+    wanted = {t.strip() for t in types.split(",") if t.strip()} if types else None
+    async with db_session() as s:
+        await _get_campaign(s, campaign_id)
+        q = select(Node.id, Node.type, Node.name).where(Node.campaign_id == campaign_id)
+        if wanted:
+            q = q.where(Node.type.in_(wanted))
+        rows = (await s.execute(q.order_by(Node.type, Node.name))).all()
+    return [{"id": r[0], "type": r[1], "name": r[2]} for r in rows]
 
 
 @router.get("/sessions/{session_id}/transcript")

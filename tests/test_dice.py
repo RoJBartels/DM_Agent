@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from dm_agent.rules import DiceError, ability_modifier, check, roll
+from dm_agent.rules import DiceError, DiceResult, ability_modifier, check, check_outcome, roll
 
 
 class FakeRng:
@@ -99,6 +99,57 @@ def test_natural_twenty_always_succeeds():
 def test_natural_one_always_fails():
     result = check(modifier=100, dc=15, rng=FakeRng([1]))
     assert not result.success and result.critical
+
+
+# --- M2h: legible-result fields on DiceResult -------------------------------
+
+
+def test_result_exposes_modifier_and_natural_d20():
+    result = roll("d20+5", FakeRng([14]))
+    assert result.modifier == 5
+    assert result.kept == [14]
+    assert result.dropped == []
+    assert result.d20 == 14  # single kept d20 → the natural for crit detection
+    assert result.total == 19
+
+
+def test_result_marks_dropped_advantage_die():
+    result = roll("2d20kh1+3", FakeRng([7, 14]))
+    assert result.kept == [14]
+    assert result.dropped == [7]
+    assert result.d20 == 14
+    assert result.modifier == 3
+    assert result.total == 17
+
+
+def test_result_no_natural_for_non_d20_roll():
+    # A damage roll has no single kept d20, so no critical semantics apply.
+    result = roll("2d6+3", FakeRng([4, 5]))
+    assert result.d20 is None
+    assert result.kept == [4, 5]
+    assert result.modifier == 3
+    assert result.total == 12
+
+
+def test_check_outcome_meet_or_beat():
+    hit = DiceResult(expression="d20+5", total=19, d20=14)
+    assert check_outcome(hit, 15) == "success"
+    assert check_outcome(hit, 20) == "failure"
+    edge = DiceResult(expression="d20", total=15, d20=15)
+    assert check_outcome(edge, 15) == "success"  # meets the DC
+
+
+def test_check_outcome_naturals_override_dc():
+    nat20 = DiceResult(expression="d20-100", total=-80, d20=20)
+    assert check_outcome(nat20, 15) == "critical_success"  # always succeeds
+    nat1 = DiceResult(expression="d20+100", total=120, d20=1)
+    assert check_outcome(nat1, 15) == "critical_failure"  # always fails
+
+
+def test_check_outcome_without_natural_has_no_crit():
+    dmg = DiceResult(expression="2d6+3", total=12, d20=None)
+    assert check_outcome(dmg, 10) == "success"
+    assert check_outcome(dmg, 13) == "failure"
 
 
 def test_check_advantage_uses_two_dice():

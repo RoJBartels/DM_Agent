@@ -15,6 +15,8 @@
     --line2: #3a3428;
     --accent: #c9a227;
     --danger: #c05b4d;
+    --good: #6faf6a;
+    --bad: #c86a5a;
   }
   * { box-sizing: border-box; }
   body {
@@ -67,6 +69,21 @@
     border-radius: 0.6rem; padding: 0.1rem 0.55rem; margin: 0 0.15rem;
     font-family: ui-monospace, monospace; font-size: 0.85rem; color: var(--accent);
   }
+  /* Legible dice chip (M2h): distinguish the die faces, the modifier, and the verdict. */
+  .chip.dice { color: var(--text); }
+  .chip .d-label { color: var(--dim); }
+  .chip .d-note { color: var(--dim); }
+  .chip .d-mod { color: var(--accent); }
+  .chip .dropped { text-decoration: line-through; opacity: 0.5; }
+  .chip .d-out { font-weight: bold; }
+  .chip .d-out.good { color: var(--good); }
+  .chip .d-out.bad { color: var(--bad); }
+  .chip .d-out.crit-good { color: var(--accent); text-shadow: 0 0 6px rgba(201,162,39,0.5); }
+  .chip .d-out.crit-bad { color: var(--danger); font-weight: bold; }
+  .mod-src {
+    display: block; color: var(--dim); font-size: 0.74rem;
+    font-family: ui-monospace, monospace; margin: 0.2rem 0 0 1.6rem;
+  }
   .notice {
     color: var(--dim); font-size: 0.85rem; font-family: ui-monospace, monospace;
     margin: 0 0 1.1rem;
@@ -112,6 +129,15 @@
   .field label { display: block; font-size: 0.78rem; color: var(--dim); margin-bottom: 0.25rem; }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
   .grid6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; }
+  .abil { text-align: center; }
+  .abil label { text-align: center; }
+  .abil-mod {
+    display: block; margin-top: 0.2rem; font-family: ui-monospace, monospace;
+    font-size: 0.78rem; color: var(--accent);
+  }
+  .abil-tools { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+  .abil-tools .muted { margin-left: auto; }
+  #pb-status.over { color: var(--danger); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.1rem; }
   .checkbox { display: flex; align-items: center; gap: 0.4rem; }
   .checkbox input { width: auto; }
@@ -156,6 +182,12 @@
     font-size: 0.82rem; cursor: pointer; }
   .start-detail .roster .rname:hover { border-color: var(--accent); }
   .start-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .setting {
+    display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 1rem;
+    font-size: 0.86rem; cursor: pointer;
+  }
+  .setting input { width: auto; margin-top: 0.2rem; flex-shrink: 0; }
+  .setting .muted { display: block; font-size: 0.76rem; margin-top: 0.15rem; }
   #start-play {
     margin-top: 1.8rem; width: 100%; padding: 0.7rem; font-size: 1.05rem;
     font-variant: small-caps; letter-spacing: 0.08em;

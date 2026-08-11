@@ -48,16 +48,57 @@ def test_reconstruct_transcript_interleaves_prose_and_events():
     assert items[0] == {"kind": "player", "text": "I open the door."}
     assert items[1]["text"] == "The door creaks open."
     assert items[2]["text"] == "You spot a rune."
+    # A pre-M2h logged event carries no check fields → they default (chip degrades).
     assert items[3] == {
         "kind": "dice",
         "expression": "d20",
         "rolls": [14],
         "total": 14,
         "purpose": "perception",
+        "modifier": 0,
+        "kept": None,
+        "dropped": None,
+        "dc": None,
+        "outcome": None,
+        "breakdown": None,
     }
     assert items[4] == {"kind": "state", "entity": "world", "changes": {"rune_found": "true"}}
     assert items[5]["text"] == "I touch the rune."
     assert items[6]["text"] == "It glows."
+
+
+def test_reconstruct_transcript_carries_m2h_check_fields():
+    # A check event's dc/outcome/kept/dropped/modifier/breakdown must survive into
+    # the replay item so a resumed chip reads identically to the live one (M2h).
+    history = [
+        {"role": "user", "content": "I search for traps."},
+        {"role": "assistant", "content": [{"type": "text", "text": "You scan the floor."}]},
+    ]
+    events = [
+        {"type": "turn_start", "turn_id": "turn-0"},
+        {
+            "type": "dice_roll",
+            "expression": "2d20kh1+5",
+            "rolls": [7, 14],
+            "kept": [14],
+            "dropped": [7],
+            "modifier": 5,
+            "total": 19,
+            "dc": 15,
+            "outcome": "success",
+            "purpose": "Perception (Kara)",
+            "breakdown": [{"source": "DEX", "value": 3}, {"source": "proficiency", "value": 2}],
+        },
+        {"type": "turn_end", "turn_id": "turn-0"},
+    ]
+    items = reconstruct_transcript(history, events)
+    dice = next(it for it in items if it["kind"] == "dice")
+    assert dice["dc"] == 15
+    assert dice["outcome"] == "success"
+    assert dice["kept"] == [14]
+    assert dice["dropped"] == [7]
+    assert dice["modifier"] == 5
+    assert dice["breakdown"][0] == {"source": "DEX", "value": 3}
 
 
 def test_reconstruct_transcript_empty():

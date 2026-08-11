@@ -34,14 +34,75 @@ function setBusy(busy) {
 }
 
 // Shared visual builders so live events and history replay render identically.
+
+const OUTCOME = {
+  critical_success: { icon: "★", label: "Critical", cls: "crit-good" },
+  success: { icon: "✓", label: "Success", cls: "good" },
+  failure: { icon: "✗", label: "Failure", cls: "bad" },
+  critical_failure: { icon: "✗", label: "Critical miss", cls: "crit-bad" },
+};
+
+// Derive a readable die notation from the expression (the dice, without the flat
+// modifier): "d20+5" → "d20", "2d6+3" → "2d6", advantage/disadvantage labelled.
+function diceNotation(expression) {
+  const e = String(expression || "").replaceAll(" ", "").toLowerCase();
+  if (e.includes("2d20kh1")) return "d20 (adv)";
+  if (e.includes("2d20kl1")) return "d20 (disadv)";
+  const m = e.match(/\d*d\d+/);
+  return m ? m[0].replace(/^d/, "1d").replace(/^1d/, "d") : e || "roll";
+}
+
+function span(cls, text) {
+  const s = document.createElement("span");
+  if (cls) s.className = cls;
+  s.textContent = text;
+  return s;
+}
+
+// A legible dice chip (M2h): shows the die face(s) vs the modifier vs the total,
+// and — for a check — the DC and a coloured pass/fail/critical verdict. Falls back
+// to a plain reading for pre-M2h events that lack the new fields.
 function renderDice(ev) {
   const chip = document.createElement("span");
-  chip.className = "chip";
-  const purpose = ev.purpose ? `${ev.purpose}: ` : "";
-  chip.textContent = `🎲 ${purpose}${ev.expression} → ${ev.total} [${(ev.rolls || []).join(", ")}]`;
+  chip.className = "chip dice";
+
+  chip.append(span("", "🎲 "));
+  if (ev.purpose) chip.append(span("d-label", `${ev.purpose} — `));
+  chip.append(span("d-note", `${diceNotation(ev.expression)}: `));
+
+  // Dice faces: kept dice sum with " + "; advantage's dropped die is struck through.
+  const kept = Array.isArray(ev.kept) ? ev.kept : ev.rolls || [];
+  const dropped = Array.isArray(ev.dropped) ? ev.dropped : [];
+  kept.forEach((v, i) => {
+    if (i) chip.append(span("", " + "));
+    chip.append(span("", String(v)));
+  });
+  dropped.forEach((v) => {
+    chip.append(span("", " / "));
+    chip.append(span("dropped", String(v)));
+  });
+
+  if (ev.modifier) chip.append(span("d-mod", ` ${ev.modifier > 0 ? "+" : "−"}${Math.abs(ev.modifier)}`));
+  chip.append(span("", ` = ${ev.total}`));
+
+  if (ev.dc != null) {
+    chip.append(span("d-note", ` vs DC ${ev.dc}`));
+    const o = OUTCOME[ev.outcome];
+    if (o) chip.append(span(`d-out ${o.cls}`, ` → ${o.icon} ${o.label}`));
+  }
+
   const holder = document.createElement("p");
   holder.className = "notice";
   holder.appendChild(chip);
+  // Modifier provenance: "+3 DEX, +2 proficiency" — visible and on hover.
+  const breakdown = Array.isArray(ev.breakdown) ? ev.breakdown : [];
+  if (breakdown.length) {
+    const src = breakdown
+      .map((b) => `${b.value > 0 ? "+" : "−"}${Math.abs(b.value)} ${b.source}`)
+      .join(", ");
+    chip.title = src;
+    holder.appendChild(span("mod-src", src));
+  }
   log.appendChild(holder);
   dmBlock = null; // next narration starts a fresh paragraph after the chip
   scroll();

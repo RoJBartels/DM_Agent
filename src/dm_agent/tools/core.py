@@ -6,9 +6,47 @@ from typing import Any
 from sqlalchemy import select
 
 from dm_agent.db import Character, WorldFlag, db_session
-from dm_agent.events import DiceRoll, StateUpdate
-from dm_agent.rules import DiceError, roll
+from dm_agent.events import DiceRoll, ModifierSource, StateUpdate
+from dm_agent.rules import DiceError, DiceResult, check_outcome, roll
 from dm_agent.tools.base import Tool, ToolContext
+
+_OUTCOME_WORD = {
+    "success": "SUCCESS",
+    "failure": "FAILURE",
+    "critical_success": "CRITICAL SUCCESS",
+    "critical_failure": "CRITICAL FAILURE",
+}
+
+
+def _clean_breakdown(raw: Any) -> list[ModifierSource] | None:
+    """Coerce the model's breakdown arg into typed sources, ignoring junk. Returns
+    None when there's nothing usable so the field stays absent for damage rolls."""
+    if not isinstance(raw, list):
+        return None
+    items: list[ModifierSource] = []
+    for entry in raw:
+        if isinstance(entry, dict) and "source" in entry and "value" in entry:
+            try:
+                items.append(ModifierSource(source=str(entry["source"]), value=int(entry["value"])))
+            except (TypeError, ValueError):
+                continue
+    return items or None
+
+
+def _describe_roll(result: DiceResult, dc: int | None, outcome: str | None,
+                   breakdown: list[ModifierSource] | None) -> str:
+    """The tool-result string handed back to the model. It states the engine's
+    verdict explicitly so the narration matches the chip the player sees."""
+    parts = [f"Rolled {result.expression}: dice {result.rolls}"]
+    if result.modifier:
+        parts.append(f"modifier {result.modifier:+d}")
+    parts.append(f"total {result.total}")
+    line = ", ".join(parts)
+    if dc is not None:
+        line += f" vs DC {dc} -> {_OUTCOME_WORD.get(outcome, outcome or 'unknown')}"
+    if breakdown:
+        line += " (" + ", ".join(f"{b.value:+d} {b.source}" for b in breakdown) + ")"
+    return line
 
 
 async def _roll_dice(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -18,10 +56,25 @@ async def _roll_dice(ctx: ToolContext, args: dict[str, Any]) -> str:
         result = roll(expression)
     except DiceError as e:
         return f"Error: {e}"
+    dc = args.get("dc")
+    dc = int(dc) if dc is not None else None
+    outcome = check_outcome(result, dc) if dc is not None else None
+    breakdown = _clean_breakdown(args.get("breakdown"))
     await ctx.emit(
-        DiceRoll(expression=expression, rolls=result.rolls, total=result.total, purpose=purpose)
+        DiceRoll(
+            expression=expression,
+            rolls=result.rolls,
+            total=result.total,
+            purpose=purpose,
+            modifier=result.modifier,
+            kept=result.kept,
+            dropped=result.dropped,
+            dc=dc,
+            outcome=outcome,
+            breakdown=breakdown,
+        )
     )
-    return f"Rolled {expression}: dice {result.rolls} -> total {result.total}"
+    return _describe_roll(result, dc, outcome, breakdown)
 
 
 async def _find_character(ctx: ToolContext, session, name: str) -> Character | None:
@@ -110,16 +163,42 @@ TOOLS: list[Tool] = [
         name="roll_dice",
         description=(
             "Roll dice with a deterministic engine. Call this for EVERY roll — never invent "
-            "results. Supports NdM+K terms and advantage/disadvantage via 2d20kh1 / 2d20kl1 "
-            "(e.g. 'd20', '2d6+3', '2d20kh1+5')."
+            "results. Put the whole modifier in the expression (e.g. 'd20+5'); supports NdM+K "
+            "terms and advantage/disadvantage via 2d20kh1 / 2d20kl1. For an ability check, save, "
+            "or attack made against a target number, ALWAYS pass dc — the engine then reports "
+            "success/failure/critical, and you must narrate the outcome it returns (don't "
+            "re-judge it). Omit dc for damage and other free rolls. Whenever there's a modifier, "
+            "itemize it in breakdown so the player sees where each bonus/penalty comes from."
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "expression": {"type": "string", "description": "Dice expression, e.g. '2d6+3'"},
+                "expression": {"type": "string", "description": "Dice expression, e.g. 'd20+5'"},
                 "purpose": {
                     "type": "string",
-                    "description": "What the roll is for, e.g. 'DC 15 Dex save (Kara)'",
+                    "description": "What the roll is for, e.g. 'Perception (Kara)' or 'Fire damage'",
+                },
+                "dc": {
+                    "type": "integer",
+                    "description": (
+                        "Target number for a d20 check/save/attack (roll ≥ dc succeeds; a "
+                        "natural 20 always succeeds, a natural 1 always fails). Omit for damage."
+                    ),
+                },
+                "breakdown": {
+                    "type": "array",
+                    "description": (
+                        "The modifier's sources, e.g. "
+                        "[{\"source\":\"DEX\",\"value\":3},{\"source\":\"proficiency\",\"value\":2}]."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "value": {"type": "integer"},
+                        },
+                        "required": ["source", "value"],
+                    },
                 },
             },
             "required": ["expression"],
