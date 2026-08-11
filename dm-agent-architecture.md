@@ -1,7 +1,8 @@
 # Dungeon Master Agent — Architecture Reference (v1, locked)
 
-**Status:** Global architecture agreed and locked. **Addendum 2026-07-12** (post first play session): §2b (story/adventure guide) added and decided; does not reopen any prior decision.
+**Status:** Global architecture agreed and locked. **Addendum 2026-07-12** (post first play session): §2b (story/adventure guide) added and decided. **Addendum 2026-08-11** (second play session): player agency elevated to a core principle below; embeddings noted as a required runtime dependency (§8); build order (§9) gains M2d/M2e. Neither addendum reopens any prior decision.
 **Core design principle:** *The LLM narrates, code adjudicates.* Everything mechanical (dice, HP, DCs, combat math) is handled by deterministic tools — never by the LLM.
+**Player agency is absolute (core principle):** the players decide; the DM never decides for them. It answers a player's questions and describes the world *without advancing the fiction*, and never has a player's character take a consequential action the player didn't declare — it offers options and waits. The world moves only in response to a declared action (or a danger already in motion the player knows about). This binds every layer and milestone below (enforced today in the orchestrator system prompt; must survive party play, NPC subagents, and the story guide — which is advisory, never scripting).
 
 ---
 
@@ -176,6 +177,7 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 | Backend | Python + FastAPI, Anthropic SDK tool-use loop (LangGraph optional) |
 | Structured state | Postgres (SQLite for prototype) |
 | Vector store | pgvector or Qdrant |
+| Embeddings | Local sentence-transformers (bge-small, 384-dim), in-process — a **required** runtime dependency (lore/rules retrieval and the world build all embed in-process; not an optional extra) |
 | Knowledge graph | **Open** — see §2 |
 | Rules corpus | SRD 5.1 |
 | Story guide | Optional per campaign, `story_beats` table — see §2b |
@@ -188,6 +190,7 @@ The core agent loop stays in code (latency-sensitive, multi-round tool calls). n
 
 1. **Core loop:** text narration + dice + character sheets + structured state
 2. **Knowledge layer:** static graph build + dynamic RAG + `lookup_lore` with recency-override, plus optional story-guide ingestion (§2b)
+   - **Management & play UX** (added from play sessions; stage + small server additions, no new architecture): campaign/character CRUD + world/adventure upload *(done)*; **M2d** — start menu + visible history on reconnect (session state already persists; the on-screen transcript is replayed, display-only); **M2e** — multi-character party play (party roster injected into the per-turn context + the player picks which character acts). Both bound by the player-agency principle above.
 3. **SFX/ambience:** event stream + tagged asset library *(huge immersion win, tiny effort — just tag matching)*
 4. **Combat + maps:** `manage_combat` + `generate_map` renderer sharing coordinates
 5. **NPC subagents** with scoped knowledge
