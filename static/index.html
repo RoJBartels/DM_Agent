@@ -116,12 +116,57 @@
   .checkbox { display: flex; align-items: center; gap: 0.4rem; }
   .checkbox input { width: auto; }
   #job-status { margin-top: 0.8rem; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+
+  /* Actor selector (M2e) — sits at the head of the action bar */
+  #actor { width: auto; max-width: 11rem; flex-shrink: 0; }
+
+  /* Start menu (M2d) */
+  #start-screen {
+    position: fixed; inset: 0; z-index: 5; background: var(--bg);
+    display: none; align-items: flex-start; justify-content: center;
+    overflow-y: auto; padding: clamp(1.5rem, 8vh, 5rem) 1rem;
+  }
+  #start-screen.open { display: flex; }
+  .start-card {
+    width: min(34rem, 94vw); background: var(--panel);
+    border: 1px solid var(--line2); border-radius: 0.7rem; padding: 1.8rem 1.9rem;
+  }
+  .start-card h1 {
+    margin: 0 0 0.3rem; font-variant: small-caps; letter-spacing: 0.12em;
+    color: var(--accent); font-weight: normal;
+  }
+  .start-section { margin-top: 1.6rem; }
+  .start-section h2, .start-detail h2 {
+    font-size: 0.72rem; font-variant: small-caps; letter-spacing: 0.14em;
+    color: var(--dim); margin: 0 0 0.6rem; font-weight: normal;
+  }
+  .start-campaign {
+    display: flex; justify-content: space-between; align-items: center; gap: 0.6rem;
+    padding: 0.6rem 0.7rem; border: 1px solid var(--line2); border-radius: 0.5rem;
+    margin-bottom: 0.45rem; cursor: pointer; background: var(--panel2);
+  }
+  .start-campaign:hover { border-color: var(--accent); }
+  .start-campaign.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .start-campaign .sc-name { font-size: 1rem; }
+  .start-campaign .sc-meta { font-size: 0.72rem; color: var(--dim); text-align: right; }
+  .start-detail { margin-top: 1.6rem; }
+  .start-detail .roster { margin: 0.2rem 0 0.8rem; }
+  .start-detail .roster .rname { display: inline-block; margin: 0 0.5rem 0.35rem 0;
+    padding: 0.15rem 0.5rem; border: 1px solid var(--line2); border-radius: 0.4rem;
+    font-size: 0.82rem; cursor: pointer; }
+  .start-detail .roster .rname:hover { border-color: var(--accent); }
+  .start-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  #start-play {
+    margin-top: 1.8rem; width: 100%; padding: 0.7rem; font-size: 1.05rem;
+    font-variant: small-caps; letter-spacing: 0.08em;
+  }
 </style>
 </head>
 <body>
   <header>
     <span class="row" style="gap:0.8rem">
-      <button id="toggle-sidebar" class="ghost small" title="Toggle menu">☰</button>
+      <button id="toggle-sidebar" class="ghost small" title="Toggle sidebar">☰</button>
+      <button id="home" class="ghost small" title="Back to start menu">⌂</button>
       <span>Dungeon Master</span>
     </span>
     <span id="status">connecting…</span>
@@ -157,10 +202,26 @@
     <div id="stage">
       <div id="log"></div>
       <form id="form">
+        <select id="actor" title="Who is acting?" hidden></select>
         <input id="input" type="text" autocomplete="off"
                placeholder="What do you do?" disabled>
         <button id="send" type="submit" disabled>Act</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Start menu (M2d): shown on load; play connects only when chosen. -->
+  <div id="start-screen">
+    <div class="start-card">
+      <h1>Dungeon Master</h1>
+      <p class="muted">Choose a campaign, ready your party, then step into the world.</p>
+      <div class="start-section">
+        <h2>Campaigns</h2>
+        <div id="start-campaigns"></div>
+        <button id="start-new-campaign" class="ghost small">＋ New campaign</button>
+      </div>
+      <div id="start-detail" class="start-detail"></div>
+      <button id="start-play" disabled>▶ Enter play</button>
     </div>
   </div>
 

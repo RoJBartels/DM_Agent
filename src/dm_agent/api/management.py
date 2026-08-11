@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dm_agent.db import Campaign, Character, GameSession, Node, StoryBeat, db_session
+from dm_agent.db import Campaign, Character, EventLog, GameSession, Node, StoryBeat, db_session
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class CampaignOut(BaseModel):
     character_count: int
     has_world: bool
     has_story: bool
+    has_history: bool  # latest play has a transcript → the start menu offers "Continue"
 
 
 class SessionOut(BaseModel):
@@ -128,6 +129,85 @@ async def get_or_create_session(s: AsyncSession, campaign_id: uuid.UUID) -> Game
     return session
 
 
+def reconstruct_transcript(
+    history: list[Any], events: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Rebuild a display-only transcript so a reconnecting player sees where they
+    left off (M2d). The on-screen log is wiped on connect, but two persisted
+    sources survive: `GameSession.history` (player text + DM narration, in order,
+    but no narration is in the event log) and the session's `event_log` rows
+    (clean typed dice/state/error events, but no narration). We use history as the
+    ordering backbone and fold each turn's typed events in after its prose.
+
+    A turn = one player-string message in history ↔ one turn_start..turn_end span
+    in the event log; both are written 1:1 per `run_turn`, so zipping by turn index
+    is exact and never relies on fuzzy matching. Replay is display-only — it must
+    never resolve a turn."""
+    # Bucket the typed events by turn. Anything before the first turn_start (there
+    # shouldn't be any) opens an implicit bucket so nothing is dropped.
+    event_turns: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] | None = None
+    for ev in events:
+        etype = ev.get("type")
+        if etype == "turn_start":
+            current = []
+            event_turns.append(current)
+        elif etype in ("dice_roll", "state_update", "error"):
+            if current is None:
+                current = []
+                event_turns.append(current)
+            current.append(ev)
+
+    # Split history into the same turns: a user string message starts a new turn;
+    # assistant text blocks are that turn's narration (tool-use/result blocks and
+    # thinking are skipped — they're mechanical, not transcript).
+    history_turns: list[dict[str, Any]] = []
+    turn: dict[str, Any] | None = None
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if msg.get("role") == "user" and isinstance(content, str):
+            turn = {"player": content, "narration": []}
+            history_turns.append(turn)
+        elif msg.get("role") == "assistant" and isinstance(content, list):
+            if turn is None:  # assistant before any player message — defensive
+                turn = {"player": None, "narration": []}
+                history_turns.append(turn)
+            text = "".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+            if text.strip():
+                turn["narration"].append(text)
+
+    items: list[dict[str, Any]] = []
+    for i, ht in enumerate(history_turns):
+        if ht["player"] is not None:
+            items.append({"kind": "player", "text": ht["player"]})
+        for text in ht["narration"]:
+            items.append({"kind": "narration", "text": text})
+        for ev in event_turns[i] if i < len(event_turns) else []:
+            if ev["type"] == "dice_roll":
+                items.append(
+                    {
+                        "kind": "dice",
+                        "expression": ev.get("expression", ""),
+                        "rolls": ev.get("rolls", []),
+                        "total": ev.get("total"),
+                        "purpose": ev.get("purpose", ""),
+                    }
+                )
+            elif ev["type"] == "state_update":
+                items.append(
+                    {"kind": "state", "entity": ev.get("entity", ""), "changes": ev.get("changes", {})}
+                )
+            elif ev["type"] == "error":
+                items.append({"kind": "error", "message": ev.get("message", "")})
+    return items
+
+
 # --- campaigns -------------------------------------------------------------
 
 
@@ -152,6 +232,17 @@ async def list_campaigns() -> list[CampaignOut]:
         story_campaigns = set(
             (await s.execute(select(StoryBeat.campaign_id).distinct())).scalars().all()
         )
+        # Campaigns whose play has actually started (any session with a non-empty
+        # message history) — drives Continue vs. Begin on the start menu.
+        played_campaigns = set(
+            (
+                await s.execute(
+                    select(GameSession.campaign_id)
+                    .where(func.jsonb_array_length(GameSession.history) > 0)
+                    .distinct()
+                )
+            ).scalars().all()
+        )
 
     return [
         CampaignOut(
@@ -161,6 +252,7 @@ async def list_campaigns() -> list[CampaignOut]:
             character_count=char_counts.get(c.id, 0),
             has_world=c.id in world_campaigns,
             has_story=c.id in story_campaigns,
+            has_history=c.id in played_campaigns,
         )
         for c in campaigns
     ]
@@ -180,6 +272,7 @@ async def create_campaign(body: CampaignIn) -> CampaignOut:
         character_count=0,
         has_world=False,
         has_story=False,
+        has_history=False,
     )
 
 
@@ -191,6 +284,24 @@ async def campaign_session(campaign_id: uuid.UUID) -> SessionOut:
         session = await get_or_create_session(s, campaign_id)
         await s.commit()
         return SessionOut(session_id=session.id, campaign_id=campaign_id)
+
+
+@router.get("/sessions/{session_id}/transcript")
+async def session_transcript(session_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Display-only replay of a session's prior play (M2d), so a reconnecting
+    player sees the story so far. Never resolves a turn."""
+    async with db_session() as s:
+        session = await s.get(GameSession, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
+        rows = (
+            await s.execute(
+                select(EventLog.event)
+                .where(EventLog.session_id == session_id)
+                .order_by(EventLog.id)
+            )
+        ).scalars().all()
+    return reconstruct_transcript(session.history or [], list(rows))
 
 
 # --- characters ------------------------------------------------------------

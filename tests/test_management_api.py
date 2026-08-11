@@ -12,9 +12,9 @@ import uuid
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
-from dm_agent.db import Campaign, Character, GameSession, StoryBeat, db_session
+from dm_agent.db import Campaign, Character, EventLog, GameSession, StoryBeat, db_session
 from dm_agent.main import app
 
 
@@ -41,6 +41,12 @@ async def client():
         for cid in created:
             await s.execute(delete(Character).where(Character.campaign_id == cid))
             await s.execute(delete(StoryBeat).where(StoryBeat.campaign_id == cid))
+            # EventLog references sessions (FK) — delete it before the sessions.
+            sess_ids = (
+                await s.execute(select(GameSession.id).where(GameSession.campaign_id == cid))
+            ).scalars().all()
+            if sess_ids:
+                await s.execute(delete(EventLog).where(EventLog.session_id.in_(sess_ids)))
             await s.execute(delete(GameSession).where(GameSession.campaign_id == cid))
             await s.execute(delete(Campaign).where(Campaign.id == cid))
         await s.commit()
@@ -56,6 +62,7 @@ async def test_campaign_and_character_crud(client):
     assert camp["name"] == "Test Realm"
     assert camp["has_world"] is False
     assert camp["has_story"] is False
+    assert camp["has_history"] is False
     assert camp["character_count"] == 0
     cid = camp["id"]
 
@@ -152,3 +159,65 @@ async def test_unknown_job_404(client):
     c, _ = client
     assert (await c.get("/api/world-jobs/does-not-exist")).status_code == 404
     assert (await c.get("/api/story-jobs/does-not-exist")).status_code == 404
+
+
+async def test_transcript_replay_and_history_flag(client):
+    """M2d: a session's prior play is replayable, and has_history flips once a
+    campaign has been played (so the start menu can offer Continue)."""
+    c, created = client
+    r = await c.post("/api/campaigns", json={"name": "Replay Realm"})
+    cid = uuid.UUID(r.json()["id"])
+    created.append(cid)
+
+    # A fresh, never-played campaign: has_history is False.
+    row = next(x for x in (await c.get("/api/campaigns")).json() if x["id"] == str(cid))
+    assert row["has_history"] is False
+
+    r = await c.post(f"/api/campaigns/{cid}/session")
+    sid = uuid.UUID(r.json()["session_id"])
+
+    # Seed one played turn directly: history (player + narration) + typed events.
+    async with db_session() as s:
+        sess = await s.get(GameSession, sid)
+        sess.history = [
+            {"role": "user", "content": "I open the door."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "The door creaks open."},
+                    {"type": "tool_use", "id": "t1", "name": "roll_dice", "input": {"expression": "d20"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "You spot a rune."}]},
+        ]
+        s.add(EventLog(session_id=sid, event={"type": "turn_start", "turn_id": "turn-0"}))
+        s.add(
+            EventLog(
+                session_id=sid,
+                event={
+                    "type": "dice_roll",
+                    "expression": "d20",
+                    "rolls": [14],
+                    "total": 14,
+                    "purpose": "perception",
+                },
+            )
+        )
+        s.add(EventLog(session_id=sid, event={"type": "turn_end", "turn_id": "turn-0"}))
+        await s.commit()
+
+    # Now the campaign reads as played.
+    row = next(x for x in (await c.get("/api/campaigns")).json() if x["id"] == str(cid))
+    assert row["has_history"] is True
+
+    items = (await c.get(f"/api/sessions/{sid}/transcript")).json()
+    assert [it["kind"] for it in items] == ["player", "narration", "narration", "dice"]
+    assert items[0]["text"] == "I open the door."
+    assert items[3]["total"] == 14
+
+    # Unknown session -> 404.
+    assert (await c.get(f"/api/sessions/{uuid.uuid4()}/transcript")).status_code == 404

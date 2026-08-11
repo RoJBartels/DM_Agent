@@ -11,9 +11,10 @@ import uuid
 from typing import Any
 
 import anthropic
+from sqlalchemy import select
 
 from dm_agent.config import get_settings
-from dm_agent.db import EventLog, GameSession, db_session
+from dm_agent.db import Character, EventLog, GameSession, db_session
 from dm_agent.events import Event, NarrationDelta, TurnEnd, TurnStart
 from dm_agent.tools import TOOL_DEFINITIONS, TOOLS_BY_NAME, ToolContext
 from dm_agent.tools.base import EmitFn
@@ -55,6 +56,12 @@ after they happen in the fiction.
 If lookup_lore reports no lore is on record, you are free to improvise the world — that is \
 expected for a fresh campaign.
 
+The party. A roster of the campaign's characters is provided below each turn when one exists \
+— it tells you who the party IS (names, whether each is a player's hero or an NPC you voice), \
+never what they do. When a player's message begins "As <Name>:", that character is taking the \
+action this turn; resolve their sheet and speak in their voice. Player agency still binds: you \
+voice the party's NPCs, but you never decide a player-controlled hero's actions for them.
+
 Narration style: second person, present tense, vivid but tight — usually 2 to 6 sentences \
 between player decisions. End each turn at a natural decision point, often with a question \
 or a clear prompt for what the players can do. Never decide for the players — offer \
@@ -68,6 +75,29 @@ _CACHED_SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"typ
 MAX_TOOL_ITERATIONS = 12
 # Summarize the scene into the dynamic knowledge layer every N player turns.
 SUMMARIZE_EVERY = 3
+
+
+def format_party_roster(chars: list[Character]) -> str:
+    """Render the party as a private "who's here" block for the per-turn context.
+    Empty party → "" (injects nothing). PCs are expected to be listed first."""
+    if not chars:
+        return ""
+    lines = [
+        "[Party roster — the characters in this campaign. This is who the party IS, not "
+        "what they do; player agency remains absolute. A message beginning \"As <Name>:\" "
+        "means that character is acting this turn.]"
+    ]
+    for c in chars:
+        stats = c.stats if isinstance(c.stats, dict) else {}
+        role = "PC" if c.is_pc else "NPC"
+        cls = str(stats.get("class") or "").strip()
+        lvl = stats.get("level")
+        klass = f"{cls} {lvl}".strip() if cls else ""
+        meta = " · ".join(p for p in (klass, f"HP {c.hp}/{c.max_hp}", f"AC {c.ac}") if p)
+        note = (c.notes or "").strip().splitlines()
+        tail = f" {note[0].strip()}" if note else ""
+        lines.append(f"- {c.name} ({role}) — {meta}.{tail}")
+    return "\n".join(lines)
 
 
 def _count_player_turns(messages: list[dict[str, Any]]) -> int:
@@ -122,14 +152,21 @@ class Orchestrator:
         messages: list[dict[str, Any]] = [*game_session.history]
         messages.append({"role": "user", "content": player_text})
 
-        # Story guide (M2c, §2b): fetch the current beats once per turn and append
-        # them as an *uncached* system block after the cache-stable prefix. It
-        # changes as the story advances, so it must sit past the cache breakpoint;
-        # an empty guide adds nothing. Never let this break a turn.
+        # Per-turn context (M2e party roster + M2c story beats) goes into a single
+        # *uncached* system block after the cache-stable prefix: both change as play
+        # goes on (party edits, story advances), so they must sit past the cache
+        # breakpoint. Empty pieces add nothing; a failure here never breaks a turn.
         system = _CACHED_SYSTEM
-        notes = await self._directors_notes(game_session.campaign_id)
-        if notes:
-            system = [*_CACHED_SYSTEM, {"type": "text", "text": notes}]
+        blocks = [
+            b
+            for b in (
+                await self._party_roster(game_session.campaign_id),
+                await self._directors_notes(game_session.campaign_id),
+            )
+            if b
+        ]
+        if blocks:
+            system = [*_CACHED_SYSTEM, {"type": "text", "text": "\n\n".join(blocks)}]
 
         await emit_and_log(TurnStart(turn_id=turn_id))
         try:
@@ -193,6 +230,24 @@ class Orchestrator:
             game_session.history = messages
             await emit_and_log(TurnEnd(turn_id=turn_id))
             await self._maybe_summarize_scene(game_session, messages)
+
+    async def _party_roster(self, campaign_id: uuid.UUID) -> str:
+        """The campaign's characters formatted as a private per-turn roster (M2e),
+        or "" if there are none. Tells the narrator who the party IS, never what
+        they do. A failure here must never break a turn."""
+        try:
+            async with db_session() as s:
+                chars = (
+                    await s.execute(
+                        select(Character)
+                        .where(Character.campaign_id == campaign_id)
+                        .order_by(Character.is_pc.desc(), Character.name)
+                    )
+                ).scalars().all()
+            return format_party_roster(chars)
+        except Exception:
+            log.exception("party-roster fetch failed for campaign %s", campaign_id)
+            return ""
 
     async def _directors_notes(self, campaign_id: uuid.UUID) -> str:
         """Current story-guide beats formatted as private director's notes, or ""

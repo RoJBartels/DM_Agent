@@ -12,6 +12,7 @@ const modal = el("modal");
 
 let campaigns = [];
 let activeCampaignId = null;
+let party = []; // characters of the active campaign (drives menu roster + stage selector)
 
 // --- fetch helpers ---------------------------------------------------------
 
@@ -72,35 +73,124 @@ function renderCampaignStatuses() {
   el("story-status").textContent = campaign?.has_story ? "guide loaded ✓" : "no guide yet";
 }
 
+// Selecting a campaign loads its party and refreshes the menu — it no longer
+// connects. Play begins only when the player explicitly enters it (M2d).
 async function selectCampaign(id) {
   activeCampaignId = id;
   localStorage.setItem(LS_CAMPAIGN, id);
   el("campaign-select").value = id;
   renderCampaignStatuses();
+  renderStartCampaigns();
   await loadParty(id);
-  const { session_id } = await api(`/api/campaigns/${id}/session`, { method: "POST" });
+}
+
+async function enterPlay() {
+  if (!activeCampaignId) return;
+  const { session_id } = await api(`/api/campaigns/${activeCampaignId}/session`, { method: "POST" });
+  el("start-screen").classList.remove("open");
   window.Stage.connect(session_id);
 }
 
-el("campaign-select").addEventListener("change", (e) => selectCampaign(e.target.value));
-
-el("new-campaign").addEventListener("click", async () => {
-  const name = prompt("New campaign name:");
-  if (!name || !name.trim()) return;
+async function createCampaign(name) {
   const c = await api("/api/campaigns", {
     method: "POST",
     body: JSON.stringify({ name: name.trim() }),
   });
   campaigns.push(c);
   renderCampaignSelect();
-  await selectCampaign(c.id);
+  return c;
+}
+
+// Re-open the start menu mid-play; refresh flags first so it's current.
+async function showStartScreen() {
+  campaigns = await api("/api/campaigns");
+  renderCampaignSelect();
+  renderStartCampaigns();
+  renderStartDetail();
+  el("start-screen").classList.add("open");
+}
+
+// The sidebar switcher jumps straight into that campaign's play.
+el("campaign-select").addEventListener("change", async (e) => {
+  await selectCampaign(e.target.value);
+  await enterPlay();
 });
+
+el("new-campaign").addEventListener("click", async () => {
+  const name = prompt("New campaign name:");
+  if (!name || !name.trim()) return;
+  const c = await createCampaign(name);
+  await selectCampaign(c.id);
+  await enterPlay();
+});
+
+// --- start menu (M2d) ------------------------------------------------------
+
+function renderStartCampaigns() {
+  const box = el("start-campaigns");
+  box.innerHTML = "";
+  for (const c of campaigns) {
+    const card = document.createElement("div");
+    card.className = "start-campaign" + (c.id === activeCampaignId ? " active" : "");
+    const bits = [
+      `${c.character_count} character${c.character_count === 1 ? "" : "s"}`,
+      c.has_world ? "world ✓" : "no world",
+    ];
+    if (c.has_story) bits.push("guide ✓");
+    card.innerHTML =
+      `<span class="sc-name">${esc(c.name)}</span>` +
+      `<span class="sc-meta">${bits.join(" · ")}</span>`;
+    card.addEventListener("click", () => selectCampaign(c.id));
+    box.appendChild(card);
+  }
+}
+
+function renderStartDetail() {
+  const detail = el("start-detail");
+  const play = el("start-play");
+  const c = campaigns.find((x) => x.id === activeCampaignId);
+  if (!c) {
+    detail.innerHTML = "";
+    play.disabled = true;
+    return;
+  }
+  const roster = party.length
+    ? `<div class="roster">${party
+        .map(
+          (m) =>
+            `<span class="rname" data-cid="${m.id}">${esc(m.name)}` +
+            `${m.is_pc ? "" : " (NPC)"}</span>`
+        )
+        .join("")}</div>`
+    : `<div class="muted">No characters yet.</div>`;
+  detail.innerHTML = `
+    <h2>${esc(c.name)}</h2>
+    ${roster}
+    <div class="start-actions">
+      <button data-add class="ghost small">＋ Character</button>
+      <button data-up="world" class="ghost small">⇪ World lore</button>
+      <button data-up="story" class="ghost small">⇪ Adventure</button>
+    </div>`;
+  detail.querySelector("[data-add]").addEventListener("click", () => openCharacterModal(null));
+  detail.querySelector('[data-up="world"]').addEventListener("click", () => openUploadModal("world"));
+  detail.querySelector('[data-up="story"]').addEventListener("click", () => openUploadModal("story"));
+  for (const span of detail.querySelectorAll(".rname")) {
+    span.addEventListener("click", () => {
+      const ch = party.find((m) => m.id === span.dataset.cid);
+      if (ch) openCharacterModal(ch);
+    });
+  }
+  play.disabled = false;
+  play.textContent = c.has_history ? "▶ Continue" : "▶ Begin";
+}
 
 // --- party -----------------------------------------------------------------
 
 async function loadParty(campaignId) {
-  const chars = await api(`/api/campaigns/${campaignId}/characters`);
-  renderParty(chars);
+  party = await api(`/api/campaigns/${campaignId}/characters`);
+  renderParty(party);
+  window.Stage.setParty(party); // keep the "who is acting" selector in sync (M2e)
+  renderStartDetail();
 }
 
 function renderParty(chars) {
@@ -319,10 +409,12 @@ async function submitUpload(kind) {
       if (job.status === "done") {
         jobStatus.textContent = cfg.done(job.stats || {});
         build.textContent = "Done";
-        // Refresh has_world/has_story flags + sidebar.
+        // Refresh has_world/has_story flags + sidebar + start menu.
         campaigns = await api("/api/campaigns");
         renderCampaignSelect();
         renderCampaignStatuses();
+        renderStartCampaigns();
+        renderStartDetail();
         return;
       }
       jobStatus.innerHTML = `<span class="error">✗ build failed: ${esc(job.error)}</span>`;
@@ -340,10 +432,19 @@ async function submitUpload(kind) {
 el("toggle-sidebar").addEventListener("click", () => {
   el("sidebar").classList.toggle("collapsed");
 });
+el("home").addEventListener("click", showStartScreen);
+el("start-play").addEventListener("click", enterPlay);
+el("start-new-campaign").addEventListener("click", async () => {
+  const name = prompt("New campaign name:");
+  if (!name || !name.trim()) return;
+  const c = await createCampaign(name);
+  await selectCampaign(c.id); // stay on the menu; player enters when ready
+});
 
 (async function init() {
   await loadCampaigns();
   const stored = localStorage.getItem(LS_CAMPAIGN);
   const initial = campaigns.find((c) => c.id === stored) ? stored : campaigns[0].id;
-  await selectCampaign(initial);
+  await selectCampaign(initial); // loads party + menu, does not connect
+  el("start-screen").classList.add("open");
 })();
