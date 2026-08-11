@@ -11,7 +11,10 @@ const actorSelect = document.getElementById("actor");
 
 let ws = null;
 let dmBlock = null; // current streaming narration <p>
-let party = []; // characters for the "who is acting" selector (M2e)
+// NB: distinct from manage.js's `party` — both files are classic scripts sharing
+// one global scope, so a duplicate top-level `let` would be a redeclaration error
+// that aborts the other script. Keep cross-file top-level names unique.
+let stageParty = []; // characters for the "who is acting" selector (M2e)
 
 function scroll() {
   log.scrollTop = log.scrollHeight;
@@ -170,22 +173,22 @@ async function replayTranscript(sessionId) {
 // server already orders them that way). Hidden when there are fewer than two
 // characters — single-PC play needs no chooser.
 function setParty(chars) {
-  party = Array.isArray(chars) ? chars : [];
+  stageParty = Array.isArray(chars) ? chars : [];
   if (!actorSelect) return;
-  if (party.length < 2) {
+  if (stageParty.length < 2) {
     actorSelect.hidden = true;
     actorSelect.innerHTML = "";
     return;
   }
   const prev = actorSelect.value;
-  actorSelect.innerHTML = party
+  actorSelect.innerHTML = stageParty
     .map((c) => {
       const tag = c.is_pc ? "" : " (NPC)";
       const name = String(c.name ?? "");
       return `<option value="${name}">${name}${tag}</option>`;
     })
     .join("");
-  if (party.some((c) => c.name === prev)) actorSelect.value = prev;
+  if (stageParty.some((c) => c.name === prev)) actorSelect.value = prev;
   actorSelect.hidden = false;
 }
 

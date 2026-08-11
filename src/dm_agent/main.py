@@ -37,6 +37,18 @@ app = FastAPI(title="DM Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(api_router)
 
+
+@app.middleware("http")
+async def _revalidate_static(request, call_next):
+    """Serve the stage's HTML/JS with `Cache-Control: no-cache` so the browser
+    always revalidates (cheap 304 via etag/last-modified) instead of heuristically
+    holding a stale copy. Without this, edits to static/*.js don't show up until a
+    manual hard-refresh. no-cache (not no-store) keeps the fast conditional path."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 _orchestrator: Orchestrator | None = None
 _session_locks: dict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
