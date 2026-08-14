@@ -138,8 +138,38 @@
     font-size: 0.78rem; color: var(--accent);
   }
   .abil-tools { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
-  .abil-tools .muted { margin-left: auto; }
-  #pb-status.over { color: var(--danger); }
+  /* Point buy (M2j): budget spent and legal range are two separate readouts,
+     both always visible — the old single label flipped between them. */
+  .abil-tools .pb { margin-left: auto; text-align: right; line-height: 1.3; }
+  .pb > span { display: block; }
+  #pb-spent { font-size: 0.8rem; color: var(--dim); }
+  #pb-spent.over { color: var(--danger); }
+  #pb-range { font-size: 0.72rem; }
+
+  /* Skill proficiencies (M2j) */
+  .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+  .skills { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.1rem 0.9rem; }
+  .skill { display: flex; align-items: center; gap: 0.35rem; }
+  .skill input[type=checkbox] { width: auto; margin: 0; flex-shrink: 0; }
+  .skill label { display: inline; margin: 0; font-size: 0.84rem; color: var(--text); cursor: pointer; }
+  .skill .sk-abil { color: var(--dim); font-size: 0.68rem; }
+  .skill.eligible > label { color: var(--accent); }
+  .skill .sk-mod {
+    margin-left: auto; font-family: ui-monospace, monospace;
+    font-size: 0.76rem; color: var(--dim);
+  }
+  .skill .sk-mod.trained { color: var(--accent); }
+  .skill .sk-exp-label { font-size: 0.66rem; color: var(--dim); }
+  .skill input.sk-exp:disabled, .skill input.sk-exp:disabled + label { opacity: 0.3; }
+  #sk-hint { margin-top: 0.45rem; }
+
+  /* Click-to-add spell suggestions (M2j) */
+  .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; margin-top: 0.4rem; }
+  button.chip-add {
+    background: transparent; border: 1px solid var(--line2); color: var(--dim);
+    padding: 0.1rem 0.45rem; font-size: 0.74rem; border-radius: 0.9rem;
+  }
+  button.chip-add:hover { color: var(--accent); border-color: var(--accent); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.1rem; }
   .checkbox { display: flex; align-items: center; gap: 0.4rem; }
   .checkbox input { width: auto; }

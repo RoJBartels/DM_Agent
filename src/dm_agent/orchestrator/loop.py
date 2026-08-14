@@ -16,6 +16,7 @@ from sqlalchemy import select
 from dm_agent.config import get_settings
 from dm_agent.db import Campaign, Character, EventLog, GameSession, db_session
 from dm_agent.events import Event, NarrationDelta, TurnEnd, TurnStart
+from dm_agent.rules import format_capabilities
 from dm_agent.tools import TOOL_DEFINITIONS, TOOLS_BY_NAME, ToolContext
 from dm_agent.tools.base import EmitFn
 
@@ -71,6 +72,16 @@ never what they do. When a player's message begins "As <Name>:", that character 
 action this turn; resolve their sheet and speak in their voice. Player agency still binds: you \
 voice the party's NPCs, but you never decide a player-controlled hero's actions for them.
 
+What the party can do. Each roster entry also lists that character's ability modifiers, \
+proficient skills and saves, tool proficiencies, known spells, and class features — that is \
+the authoritative answer to "can this hero do this?". Use those numbers directly when you set \
+a check's dc and itemize its breakdown, instead of guessing or calling get_character_sheet. \
+A listed proficiency means they can attempt the thing: a rogue with thieves' tools can try a \
+lock, a caster can cast only the spells listed. Something NOT on the sheet is untrained, not \
+impossible — they may still try it, rolling the bare ability modifier with no proficiency \
+bonus. Never grant a hero a spell, proficiency, or feature their sheet doesn't have; if a \
+player insists they have one, tell them to add it to their character sheet.
+
 Narration style: second person, present tense, vivid but tight — usually 2 to 6 sentences \
 between player decisions. End each turn at a natural decision point, often with a question \
 or a clear prompt for what the players can do. Never decide for the players — offer \
@@ -103,14 +114,17 @@ AUTO_RESOLVE_NOTE = (
 
 
 def format_party_roster(chars: list[Character]) -> str:
-    """Render the party as a private "who's here" block for the per-turn context.
-    Empty party → "" (injects nothing). PCs are expected to be listed first."""
+    """Render the party as a private "who's here, and what they can do" block for
+    the per-turn context. Empty party → "" (injects nothing). PCs are expected to
+    be listed first. Each character's capabilities (M2j) follow their line,
+    indented; a sheet with none renders exactly as it did before."""
     if not chars:
         return ""
     lines = [
-        "[Party roster — the characters in this campaign. This is who the party IS, not "
-        "what they do; player agency remains absolute. A message beginning \"As <Name>:\" "
-        "means that character is acting this turn.]"
+        "[Party roster — the characters in this campaign and what each is capable of. "
+        "This is who the party IS, not what they do; player agency remains absolute. "
+        "A message beginning \"As <Name>:\" means that character is acting this turn. "
+        "Full sheets (inventory, notes) are available via get_character_sheet.]"
     ]
     for c in chars:
         stats = c.stats if isinstance(c.stats, dict) else {}
@@ -122,6 +136,7 @@ def format_party_roster(chars: list[Character]) -> str:
         note = (c.notes or "").strip().splitlines()
         tail = f" {note[0].strip()}" if note else ""
         lines.append(f"- {c.name} ({role}) — {meta}.{tail}")
+        lines.extend(f"    {line}" for line in format_capabilities(stats))
     return "\n".join(lines)
 
 
