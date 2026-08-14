@@ -16,6 +16,14 @@ from sqlalchemy import select
 from dm_agent.config import get_settings
 from dm_agent.db import Campaign, Character, EventLog, GameSession, db_session
 from dm_agent.events import Event, NarrationDelta, TurnEnd, TurnStart
+from dm_agent.orchestrator.compaction import (
+    build_messages,
+    plan_cut,
+    render_transcript,
+    summarize_history,
+    turn_starts,
+    with_cache_breakpoint,
+)
 from dm_agent.rules import format_capabilities
 from dm_agent.tools import TOOL_DEFINITIONS, TOOLS_BY_NAME, ToolContext
 from dm_agent.tools.base import EmitFn
@@ -66,7 +74,13 @@ after they happen in the fiction.
 If lookup_lore reports no lore is on record, you are free to improvise the world — that is \
 expected for a fresh campaign.
 
-The party. A roster of the campaign's characters is provided below each turn when one exists \
+Your own notes. Turns arrive with bracketed GM context attached to the player's message — the \
+party roster, private director's notes, and, once a session runs long, a "story so far" digest \
+standing in for earlier turns that have been condensed out of the conversation. None of it was \
+said by anyone at the table: it is yours to use, never to quote back or mention, and the digest \
+records things you remember happening.
+
+The party. A roster of the campaign's characters comes with each turn when one exists \
 — it tells you who the party IS (names, whether each is a player's hero or an NPC you voice), \
 never what they do. When a player's message begins "As <Name>:", that character is taking the \
 action this turn; resolve their sheet and speak in their voice. Player agency still binds: you \
@@ -95,6 +109,13 @@ _CACHED_SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"typ
 MAX_TOOL_ITERATIONS = 12
 # Summarize the scene into the dynamic knowledge layer every N player turns.
 SUMMARIZE_EVERY = 3
+
+# Frames the volatile per-turn blocks that ride on the player's message (M2k), so
+# the narrator can't mistake private context for something a player said.
+GM_CONTEXT_HEADER = (
+    "[GM context for this turn — private notes the system attaches to the player's message. "
+    "Nobody at the table said any of this. The player's actual message follows below it.]"
+)
 
 # Opt-in softening of the agency rule (M2g), injected as an uncached per-turn block
 # only when a campaign turns the setting on. It narrows the "offer and wait" step for
@@ -140,25 +161,6 @@ def format_party_roster(chars: list[Character]) -> str:
     return "\n".join(lines)
 
 
-def _count_player_turns(messages: list[dict[str, Any]]) -> int:
-    return sum(1 for m in messages if m["role"] == "user" and isinstance(m["content"], str))
-
-
-def _render_transcript(messages: list[dict[str, Any]]) -> str:
-    """Flatten recent messages into a readable Player/DM transcript for summarizing.
-    Tool-use, tool-result, and thinking blocks are skipped."""
-    lines: list[str] = []
-    for m in messages:
-        content = m["content"]
-        if isinstance(content, str):
-            lines.append(f"Player: {content}")
-        elif isinstance(content, list):
-            for b in content:
-                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
-                    lines.append(f"DM: {b['text']}")
-    return "\n".join(lines)
-
-
 def _make_client() -> anthropic.AsyncAnthropic:
     settings = get_settings()
     if settings.anthropic_api_key:
@@ -189,15 +191,19 @@ class Orchestrator:
             emit=emit_and_log,
         )
 
-        messages: list[dict[str, Any]] = [*game_session.history]
-        messages.append({"role": "user", "content": player_text})
+        history: list[dict[str, Any]] = [*game_session.history]
+        # This turn's messages are kept apart from the history so the persisted
+        # array stays clean: the GM-context block below is injected on the way out
+        # and never written back.
+        turn: list[dict[str, Any]] = [{"role": "user", "content": player_text}]
 
-        # Per-turn context (M2e party roster + M2c story beats) goes into a single
-        # *uncached* system block after the cache-stable prefix: both change as play
-        # goes on (party edits, story advances), so they must sit past the cache
-        # breakpoint. Empty pieces add nothing; a failure here never breaks a turn.
-        system = _CACHED_SYSTEM
-        blocks = [
+        # Per-turn context (M2e party roster, M2c story beats, M2g auto-resolve)
+        # rides on the player's message rather than the system prompt (M2k). The
+        # prompt cache is a *prefix* cache: volatile text sitting ahead of the
+        # message array — a roster whose HP changes every fight — would invalidate
+        # the whole history behind it, and history is what we're here to stop
+        # paying for. Empty pieces add nothing; a fetch failure never breaks a turn.
+        gm_context = "\n\n".join(
             b
             for b in (
                 await self._party_roster(game_session.campaign_id),
@@ -205,9 +211,27 @@ class Orchestrator:
                 await self._auto_resolve_note(game_session.campaign_id),
             )
             if b
-        ]
-        if blocks:
-            system = [*_CACHED_SYSTEM, {"type": "text", "text": "\n\n".join(blocks)}]
+        )
+
+        def outgoing() -> list[dict[str, Any]]:
+            """What goes on the wire this iteration: the compacted history behind a
+            cache breakpoint, then this turn behind a second one (which pays off
+            across tool round-trips, where the turn is re-sent unchanged)."""
+            sent = build_messages(history, game_session.context)
+            if sent:
+                sent[-1] = with_cache_breakpoint(sent[-1])
+            head = turn[0]
+            if gm_context:
+                head = {
+                    **head,
+                    "content": [
+                        {"type": "text", "text": f"{GM_CONTEXT_HEADER}\n\n{gm_context}"},
+                        {"type": "text", "text": player_text},
+                    ],
+                }
+            out = [*sent, head, *turn[1:]]
+            out[-1] = with_cache_breakpoint(out[-1])
+            return out
 
         await emit_and_log(TurnStart(turn_id=turn_id))
         try:
@@ -216,17 +240,30 @@ class Orchestrator:
                     model=self.settings.narrator_model,
                     max_tokens=self.settings.narrator_max_tokens,
                     thinking={"type": "adaptive"},
-                    system=system,
+                    system=_CACHED_SYSTEM,
                     tools=TOOL_DEFINITIONS,
-                    messages=messages,
+                    messages=outgoing(),
                 ) as stream:
                     async for text in stream.text_stream:
                         await emit(NarrationDelta(text=text))
                     final = await stream.get_final_message()
 
+                # Cost is the point of M2k, so make it observable: cache_read is
+                # billed at a tenth of input, so a healthy turn reads far more
+                # than it writes.
+                usage = final.usage
+                log.info(
+                    "%s tokens — input %d · cache write %d · cache read %d · output %d",
+                    turn_id,
+                    usage.input_tokens,
+                    usage.cache_creation_input_tokens or 0,
+                    usage.cache_read_input_tokens or 0,
+                    usage.output_tokens,
+                )
+
                 # Append the assistant turn verbatim (incl. thinking blocks — the API
                 # requires them unchanged when continuing on the same model).
-                messages.append(
+                turn.append(
                     {
                         "role": "assistant",
                         "content": [b.model_dump(mode="json", exclude_none=True) for b in final.content],
@@ -261,8 +298,9 @@ class Orchestrator:
                         }
                     )
                 # All results for one assistant turn go back in a single user message.
-                messages.append({"role": "user", "content": tool_results})
+                turn.append({"role": "user", "content": tool_results})
         finally:
+            messages = [*history, *turn]
             async with db_session() as s:
                 db_sess = await s.get(GameSession, game_session.id)
                 if db_sess is not None:
@@ -271,6 +309,7 @@ class Orchestrator:
             game_session.history = messages
             await emit_and_log(TurnEnd(turn_id=turn_id))
             await self._maybe_summarize_scene(game_session, messages)
+            await self._maybe_compact(game_session)
 
     async def _party_roster(self, campaign_id: uuid.UUID) -> str:
         """The campaign's characters formatted as a private per-turn roster (M2e),
@@ -319,12 +358,52 @@ class Orchestrator:
     ) -> None:
         """Every SUMMARIZE_EVERY player turns, distill the recent scene into a
         dynamic knowledge chunk. Never let a summarization failure break play."""
-        if _count_player_turns(messages) % SUMMARIZE_EVERY != 0:
+        if len(turn_starts(messages)) % SUMMARIZE_EVERY != 0:
             return
-        transcript = _render_transcript(messages[-2 * SUMMARIZE_EVERY :])
+        transcript = render_transcript(messages[-2 * SUMMARIZE_EVERY :])
         try:
             from dm_agent.knowledge.summarizer import summarize_scene
 
             await summarize_scene(game_session.campaign_id, game_session.id, transcript)
         except Exception:
             log.exception("scene summarization failed for session %s", game_session.id)
+
+    async def _maybe_compact(self, game_session: GameSession) -> None:
+        """Roll the oldest turns into a running "story so far" once the live
+        context outgrows the threshold (M2k), so a long campaign stops paying to
+        re-send its whole transcript every turn.
+
+        The history itself is never touched — only the pointer saying how much of
+        it the summary now stands in for. A failure here costs tokens, not play:
+        the next turn simply sends everything again.
+        """
+        try:
+            history = game_session.history or []
+            context = dict(game_session.context or {})
+            covered = int(context.get("covered") or 0)
+            cut = plan_cut(history, covered=covered)
+            if cut is None:
+                return
+            summary = await summarize_history(
+                str(context.get("summary") or ""), render_transcript(history[covered:cut])
+            )
+            if not summary:
+                return  # nothing folded in — don't advance past unsummarized turns
+            context.update(
+                summary=summary,
+                covered=cut,
+                compactions=int(context.get("compactions") or 0) + 1,
+            )
+            async with db_session() as s:
+                db_sess = await s.get(GameSession, game_session.id)
+                if db_sess is not None:
+                    db_sess.context = context
+                    await s.commit()
+            game_session.context = context
+            log.info(
+                "compacted session %s: %d messages folded into the summary",
+                game_session.id,
+                cut,
+            )
+        except Exception:
+            log.exception("context compaction failed for session %s", game_session.id)

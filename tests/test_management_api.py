@@ -280,3 +280,45 @@ async def test_transcript_replay_and_history_flag(client):
 
     # Unknown session -> 404.
     assert (await c.get(f"/api/sessions/{uuid.uuid4()}/transcript")).status_code == 404
+
+
+async def test_recap_is_empty_before_play_and_cached_after(client, monkeypatch):
+    """M2k: the catch-up recap. Costs nothing for a campaign nobody has played,
+    and is generated once per state of the history, not once per menu open."""
+    c, created = client
+    r = await c.post("/api/campaigns", json={"name": "Recap Reach"})
+    cid = uuid.UUID(r.json()["id"])
+    created.append(cid)
+
+    calls: list[int] = []
+
+    async def fake_recap(history, context=None, **kw):
+        calls.append(len(history))
+        return "Previously: you burned a barn."
+
+    monkeypatch.setattr("dm_agent.api.management.build_recap", fake_recap)
+
+    # Never played: no session exists, so no session is created and no LLM is called.
+    r = await c.get(f"/api/campaigns/{cid}/recap")
+    assert r.json() == {"text": "", "turns": 0}
+    assert calls == []
+
+    r = await c.post(f"/api/campaigns/{cid}/session")
+    sid = uuid.UUID(r.json()["session_id"])
+    async with db_session() as s:
+        sess = await s.get(GameSession, sid)
+        sess.history = [
+            {"role": "user", "content": "I open the door."},
+            {"role": "assistant", "content": [{"type": "text", "text": "It creaks open."}]},
+        ]
+        await s.commit()
+
+    assert (await c.get(f"/api/campaigns/{cid}/recap")).json() == {
+        "text": "Previously: you burned a barn.",
+        "turns": 1,
+    }
+    # Second open: served from the cached recap on the session's context blob.
+    assert (await c.get(f"/api/campaigns/{cid}/recap")).json()["text"].startswith("Previously")
+    assert calls == [2]
+
+    assert (await c.get(f"/api/campaigns/{uuid.uuid4()}/recap")).status_code == 404

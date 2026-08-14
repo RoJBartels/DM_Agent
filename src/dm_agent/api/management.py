@@ -25,6 +25,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dm_agent.db import Campaign, Character, EventLog, GameSession, Node, StoryBeat, db_session
+from dm_agent.orchestrator.compaction import build_recap, turn_starts
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,11 @@ class CharacterOut(BaseModel):
     ac: int
     inventory: list[Any]
     notes: str
+
+
+class RecapOut(BaseModel):
+    text: str  # "" when the campaign has never been played
+    turns: int
 
 
 class UploadIn(BaseModel):
@@ -373,6 +379,44 @@ async def lore_nodes(campaign_id: uuid.UUID, types: str | None = None) -> list[d
             q = q.where(Node.type.in_(wanted))
         rows = (await s.execute(q.order_by(Node.type, Node.name))).all()
     return [{"id": r[0], "type": r[1], "name": r[2]} for r in rows]
+
+
+@router.get("/campaigns/{campaign_id}/recap", response_model=RecapOut)
+async def campaign_recap(campaign_id: uuid.UUID) -> RecapOut:
+    """A short player-facing "previously, on..." for the campaign's latest session
+    (M2k) — the catch-up tool for picking a campaign back up days later.
+
+    Distinct from the transcript, which replays everything verbatim, and from the
+    model-context compaction, though it reads that summary for the distant past.
+    Cached against the history length so re-opening the menu costs nothing; never
+    creates a session, so browsing the menu can't start a game by accident.
+    """
+    async with db_session() as s:
+        await _get_campaign(s, campaign_id)
+        session = (
+            await s.execute(
+                select(GameSession)
+                .where(GameSession.campaign_id == campaign_id)
+                .order_by(GameSession.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        history = list(session.history or []) if session else []
+        context = dict(session.context or {}) if session else {}
+        if not history:
+            return RecapOut(text="", turns=0)
+
+        turns = len(turn_starts(history))
+        cached = context.get("recap") or {}
+        if cached.get("text") and cached.get("upto") == len(history):
+            return RecapOut(text=str(cached["text"]), turns=turns)
+
+        text = await build_recap(history, context)
+        if text and session is not None:
+            context["recap"] = {"text": text, "upto": len(history)}
+            session.context = context
+            await s.commit()
+    return RecapOut(text=text, turns=turns)
 
 
 @router.get("/sessions/{session_id}/transcript")

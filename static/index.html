@@ -214,6 +214,14 @@
     font-size: 0.82rem; cursor: pointer; }
   .start-detail .roster .rname:hover { border-color: var(--accent); }
   .start-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  /* Catch-up recap (M2k) — the "previously, on…" before you sit back down. */
+  .recap { margin: 0.9rem 0 0; }
+  .recap-text {
+    margin-top: 0.6rem; padding: 0.7rem 0.85rem; border-left: 2px solid var(--accent);
+    background: rgba(255, 255, 255, 0.03); border-radius: 0 0.4rem 0.4rem 0;
+    font-size: 0.86rem; line-height: 1.55; font-style: italic; white-space: pre-wrap;
+  }
+  .recap-text.muted { font-style: normal; }
   .setting {
     display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 1rem;
     font-size: 0.86rem; cursor: pointer;

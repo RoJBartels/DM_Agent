@@ -320,9 +320,16 @@ function renderStartDetail() {
         .join("")}</div>`
     : `<div class="muted">No characters yet.</div>`;
   const autoResolve = c.settings && c.settings.auto_resolve_simple;
+  const recap = c.has_history
+    ? `<div class="recap">
+         <button data-recap class="ghost small">📖 Story so far</button>
+         <div class="recap-text" hidden></div>
+       </div>`
+    : "";
   detail.innerHTML = `
     <h2>${esc(c.name)}</h2>
     ${roster}
+    ${recap}
     <div class="start-actions">
       <button data-add class="ghost small">＋ Character</button>
       <button data-up="world" class="ghost small">⇪ World lore</button>
@@ -336,6 +343,8 @@ function renderStartDetail() {
         never decides your meaningful choices, and questions never advance the story.</span>
       </span>
     </label>`;
+  const recapBtn = detail.querySelector("[data-recap]");
+  if (recapBtn) recapBtn.addEventListener("click", () => toggleRecap(recapBtn));
   detail.querySelector("[data-add]").addEventListener("click", () => openCharacterModal(null));
   detail.querySelector('[data-up="world"]').addEventListener("click", () => openUploadModal("world"));
   detail.querySelector('[data-up="story"]').addEventListener("click", () => openUploadModal("story"));
@@ -350,6 +359,30 @@ function renderStartDetail() {
   }
   play.disabled = false;
   play.textContent = c.has_history ? "▶ Continue" : "▶ Begin";
+}
+
+// The catch-up recap (M2k): a few sentences on where the story stands, for a
+// player picking a campaign back up days later — the alternative to rereading the
+// whole transcript. Fetched on demand rather than with the menu: it's a (cheap,
+// server-cached) model call, so nothing is spent until someone asks for it.
+async function toggleRecap(btn) {
+  const box = btn.parentElement.querySelector(".recap-text");
+  if (!box.hidden) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  if (box.dataset.loaded) return;
+  box.textContent = "…catching you up";
+  box.classList.add("muted");
+  try {
+    const { text } = await api(`/api/campaigns/${activeCampaignId}/recap`);
+    box.textContent = text || "Nothing has happened yet.";
+    box.classList.remove("muted");
+    box.dataset.loaded = "1";
+  } catch (err) {
+    box.textContent = `Couldn't write the recap — ${err.message}`;
+  }
 }
 
 // Persist a single per-campaign setting (M2g). settings is stored as one blob, so

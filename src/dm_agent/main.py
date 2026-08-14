@@ -24,6 +24,11 @@ STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # `run()` configures logging, but under --reload the app is imported in a child
+    # process that never calls it — so our own INFO lines (per-turn token usage,
+    # compaction) would vanish exactly where they're wanted. uvicorn's loggers
+    # don't propagate, so this adds no duplicates.
+    logging.basicConfig(level=logging.INFO)
     if not embeddings_available():
         log.warning(
             "Embeddings backend not installed — lore & rules retrieval will be "

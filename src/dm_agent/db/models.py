@@ -39,8 +39,16 @@ class GameSession(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
     title: Mapped[str] = mapped_column(Text, default="")
-    # Anthropic messages array for this session, persisted verbatim so play can resume.
+    # Anthropic messages array for this session, persisted verbatim so play can
+    # resume — and kept WHOLE, since the display transcript (M2d) is rebuilt from it.
     history: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # Derived context state (M2k), never the source of truth for anything:
+    # {"summary": running story-so-far, "covered": how many history messages it
+    # replaces on the wire, "compactions": int, "recap": {"text", "upto"}}.
+    # Free-form so a future compaction strategy needs no migration.
+    context: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     campaign: Mapped[Campaign] = relationship(back_populates="sessions")
