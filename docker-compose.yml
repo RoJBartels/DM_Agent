@@ -1,6 +1,10 @@
 services:
   db:
     image: pgvector/pgvector:pg17
+    # Come back automatically after a host reboot / Docker daemon restart, so the
+    # app isn't left with a refused DB connection. `unless-stopped` won't override
+    # a container you deliberately `docker compose stop`.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: dm
       POSTGRES_PASSWORD: dm
