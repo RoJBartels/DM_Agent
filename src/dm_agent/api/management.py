@@ -197,6 +197,11 @@ def reconstruct_transcript(
             items.append({"kind": "narration", "text": text})
         for ev in event_turns[i] if i < len(event_turns) else []:
             if ev["type"] == "dice_roll":
+                if ev.get("hidden"):
+                    # M2l — logged already redacted; re-emit only the flag so a
+                    # replayed screened roll can never reconstitute the numbers.
+                    items.append({"kind": "dice", "hidden": True})
+                    continue
                 items.append(
                     {
                         "kind": "dice",

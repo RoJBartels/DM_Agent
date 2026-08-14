@@ -79,3 +79,46 @@ async def test_invalid_expression_errors_without_emitting():
     out = await _roll_dice(_ctx(events), {"expression": "not-dice"})
     assert out.startswith("Error:")
     assert events == []
+
+
+# --- M2l: hidden / DM-screen rolls -----------------------------------------
+
+
+async def test_hidden_roll_emits_nothing_mechanical():
+    """The whole point: an NPC's save must not leak its modifier or the DC. The
+    emitted (and therefore logged) event carries no numbers at all."""
+    events: list = []
+    await _roll_dice(
+        _ctx(events),
+        {
+            "expression": "d20+7",
+            "purpose": "Guard WIS save vs DC 14",  # would itself leak → dropped
+            "dc": 14,
+            "breakdown": [{"source": "WIS", "value": 5}, {"source": "proficiency", "value": 2}],
+            "hidden": True,
+        },
+    )
+    ev = events[0]
+    assert isinstance(ev, DiceRoll) and ev.hidden is True
+    assert ev.rolls == [] and ev.total is None and ev.modifier == 0
+    assert ev.expression == "" and ev.purpose == ""
+    assert ev.dc is None and ev.outcome is None and ev.breakdown is None
+    # Nothing anywhere in the serialized payload betrays the numbers.
+    assert "14" not in str(ev.model_dump(mode="json"))
+
+
+async def test_hidden_roll_still_gives_the_model_the_verdict():
+    """Redaction is display-only — the engine still adjudicates and the model gets
+    the full result back, so its narration stays consistent with the mechanics."""
+    events: list = []
+    out = await _roll_dice(_ctx(events), {"expression": "10", "dc": 15, "hidden": True})
+    assert "HIDDEN ROLL" in out
+    assert "vs DC 15" in out and "FAILURE" in out
+    assert events[0].hidden is True
+
+
+async def test_rolls_are_open_by_default():
+    events: list = []
+    await _roll_dice(_ctx(events), {"expression": "10", "dc": 8})
+    assert events[0].hidden is False
+    assert events[0].total == 10

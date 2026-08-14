@@ -69,6 +69,21 @@ function renderDice(ev) {
   const chip = document.createElement("span");
   chip.className = "chip dice";
 
+  // M2l — a screened roll arrives already redacted (no faces, DC, or verdict).
+  // Show that dice were rolled; the narration says what the characters perceive.
+  if (ev.hidden) {
+    chip.classList.add("hidden-roll");
+    chip.append(span("", "🎲 "));
+    chip.append(span("d-note", "hidden roll — behind the DM screen"));
+    const holder = document.createElement("p");
+    holder.className = "notice";
+    holder.appendChild(chip);
+    log.appendChild(holder);
+    dmBlock = null;
+    scroll();
+    return;
+  }
+
   chip.append(span("", "🎲 "));
   if (ev.purpose) chip.append(span("d-label", `${ev.purpose} — `));
   chip.append(span("d-note", `${diceNotation(ev.expression)}: `));

@@ -30,10 +30,15 @@ class ModifierSource(BaseModel):
 
 
 class DiceRoll(BaseModel):
+    """A roll the engine adjudicated. Every mechanical field is optional because a
+    *hidden* roll (M2l — the DM screen) is emitted redacted: the engine still rolls
+    and judges, but the event carries no numbers at all, so nothing downstream (the
+    stage, the event log, the replayed transcript) can leak an NPC's stats."""
+
     type: Literal["dice_roll"] = "dice_roll"
-    expression: str
-    rolls: list[int]
-    total: int
+    expression: str = ""
+    rolls: list[int] = Field(default_factory=list)
+    total: int | None = None
     purpose: str = ""
     # M2h — optional, defaulted so damage rolls and pre-M2h clients still render.
     # A roll with `dc` set is a check; `outcome` is the engine's authoritative verdict.
@@ -43,6 +48,8 @@ class DiceRoll(BaseModel):
     dc: int | None = None
     outcome: str | None = None  # success | failure | critical_success | critical_failure
     breakdown: list[ModifierSource] | None = None
+    # M2l — rolled behind the DM screen. True ⇒ this event is already redacted.
+    hidden: bool = False
 
 
 class StateUpdate(BaseModel):

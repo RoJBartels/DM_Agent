@@ -101,6 +101,24 @@ def test_reconstruct_transcript_carries_m2h_check_fields():
     assert dice["breakdown"][0] == {"source": "DEX", "value": 3}
 
 
+def test_reconstruct_transcript_keeps_hidden_rolls_screened():
+    # M2l — a screened roll is logged already redacted; replay must not widen it
+    # back out. Even if a stray field survived in the log, it stays out of the item.
+    history = [
+        {"role": "user", "content": "I cast hold person on the guard."},
+        {"role": "assistant", "content": [{"type": "text", "text": "The guard shrugs it off."}]},
+    ]
+    events = [
+        {"type": "turn_start", "turn_id": "turn-0"},
+        {"type": "dice_roll", "hidden": True, "dc": 14, "total": 18, "purpose": "Guard WIS save"},
+        {"type": "turn_end", "turn_id": "turn-0"},
+    ]
+    items = reconstruct_transcript(history, events)
+    dice = next(it for it in items if it["kind"] == "dice")
+    assert dice == {"kind": "dice", "hidden": True}
+    assert "14" not in str(items) and "18" not in str(items)
+
+
 def test_reconstruct_transcript_empty():
     assert reconstruct_transcript([], []) == []
 

@@ -33,6 +33,13 @@ def _clean_breakdown(raw: Any) -> list[ModifierSource] | None:
     return items or None
 
 
+_HIDDEN_PREFIX = (
+    "[HIDDEN ROLL — rolled behind the DM screen. The player sees only that dice were "
+    "rolled, never these numbers. Narrate only what their character can perceive: the "
+    "effect, not the die, the DC, or the target's modifier.] "
+)
+
+
 def _describe_roll(result: DiceResult, dc: int | None, outcome: str | None,
                    breakdown: list[ModifierSource] | None) -> str:
     """The tool-result string handed back to the model. It states the engine's
@@ -60,6 +67,14 @@ async def _roll_dice(ctx: ToolContext, args: dict[str, Any]) -> str:
     dc = int(dc) if dc is not None else None
     outcome = check_outcome(result, dc) if dc is not None else None
     breakdown = _clean_breakdown(args.get("breakdown"))
+    if args.get("hidden"):
+        # M2l — behind the DM screen. The engine still rolled and judged (the model
+        # gets the full result back to narrate from), but the event is emitted with
+        # NOTHING mechanical: no expression, no faces, no modifier, no DC, no verdict.
+        # `purpose` is dropped too — it is model-authored free text and could itself
+        # carry the numbers we are screening ("Guard WIS save vs DC 14").
+        await ctx.emit(DiceRoll(hidden=True))
+        return _HIDDEN_PREFIX + _describe_roll(result, dc, outcome, breakdown)
     await ctx.emit(
         DiceRoll(
             expression=expression,
@@ -168,7 +183,10 @@ TOOLS: list[Tool] = [
             "or attack made against a target number, ALWAYS pass dc — the engine then reports "
             "success/failure/critical, and you must narrate the outcome it returns (don't "
             "re-judge it). Omit dc for damage and other free rolls. Whenever there's a modifier, "
-            "itemize it in breakdown so the player sees where each bonus/penalty comes from."
+            "itemize it in breakdown so the player sees where each bonus/penalty comes from. "
+            "Set hidden=true for a roll the players are not entitled to see the numbers of — "
+            "above all an NPC's or monster's saving throw, attack, or contested check, whose "
+            "modifier would give away its stat block."
         ),
         input_schema={
             "type": "object",
@@ -199,6 +217,17 @@ TOOLS: list[Tool] = [
                         },
                         "required": ["source", "value"],
                     },
+                },
+                "hidden": {
+                    "type": "boolean",
+                    "description": (
+                        "Roll it behind the DM screen. The player is shown only that a hidden "
+                        "roll happened — never the die, modifier, DC, or verdict — so use it "
+                        "for any roll that would reveal an NPC's or monster's stats (their "
+                        "saving throws, attacks, opposed Stealth/Deception) or a secret the "
+                        "characters can't know. A player's own declared check stays open: "
+                        "when in doubt, roll openly."
+                    ),
                 },
             },
             "required": ["expression"],
