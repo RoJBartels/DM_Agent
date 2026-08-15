@@ -514,6 +514,9 @@ function renderStartDetail() {
         .join("")}</div>`
     : `<div class="muted">No characters yet.</div>`;
   const autoResolve = c.settings && c.settings.auto_resolve_simple;
+  // Stored as the plan's single/multiplayer flag; labelled here by what it does at
+  // the table, since one person can perfectly well run a whole party themselves.
+  const playMode = (c.settings && c.settings.play_mode) === "multiplayer" ? "multiplayer" : "single";
   const recap = c.has_history
     ? `<div class="recap">
          <button data-recap class="ghost small">📖 Story so far</button>
@@ -537,6 +540,20 @@ function renderStartDetail() {
         door, pick up a loose item) instead of asking first. Off by default; it still
         never decides your meaningful choices, and questions never advance the story.</span>
       </span>
+    </label>
+    <label class="setting stacked">
+      <span>How the party plays
+        <span class="muted">— whether these heroes travel as one group. Splitting up is
+        always allowed either way; the DM never herds you back together.</span>
+      </span>
+      <select data-setting="play_mode">
+        <option value="single" ${playMode === "single" ? "selected" : ""}>
+          Separate viewpoints — I run several heroes; their scenes can stand apart
+        </option>
+        <option value="multiplayer" ${playMode === "multiplayer" ? "selected" : ""}>
+          One party — everyone meets, and nobody gets left behind on a journey
+        </option>
+      </select>
     </label>`;
   const recapBtn = detail.querySelector("[data-recap]");
   if (recapBtn) recapBtn.addEventListener("click", () => toggleRecap(recapBtn));
@@ -547,6 +564,9 @@ function renderStartDetail() {
   if (storyBtn) storyBtn.addEventListener("click", () => openStoryModal(c));
   detail.querySelector('[data-setting="auto_resolve_simple"]').addEventListener("change", (e) => {
     updateCampaignSetting("auto_resolve_simple", e.target.checked);
+  });
+  detail.querySelector('[data-setting="play_mode"]').addEventListener("change", (e) => {
+    updateCampaignSetting("play_mode", e.target.value);
   });
   for (const span of detail.querySelectorAll(".rname")) {
     span.addEventListener("click", () => {

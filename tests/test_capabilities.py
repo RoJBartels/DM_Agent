@@ -7,6 +7,7 @@ modifier. These are pure-logic tests — no DB, no torch.
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 from dm_agent.orchestrator.loop import format_party_roster
@@ -128,7 +129,9 @@ def test_capabilities_without_scores_list_names_but_no_numbers():
 
 
 def _char(**kw):
-    base = dict(name="X", is_pc=True, stats={}, hp=10, max_hp=10, ac=10, notes="")
+    base = dict(
+        id=uuid.uuid4(), name="X", is_pc=True, stats={}, hp=10, max_hp=10, ac=10, notes=""
+    )
     base.update(kw)
     return SimpleNamespace(**base)
 

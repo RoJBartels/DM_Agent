@@ -93,7 +93,8 @@ class CampaignOut(BaseModel):
     has_world: bool  # the campaign's WORLD has lore built
     has_story: bool
     has_history: bool  # latest play has a transcript → the start menu offers "Continue"
-    settings: dict[str, Any] = Field(default_factory=dict)  # per-campaign prefs (M2g)
+    # Per-campaign prefs: auto_resolve_simple (M2g), play_mode (M2e refinement).
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class CampaignPatch(BaseModel):

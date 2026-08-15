@@ -4,6 +4,7 @@ orchestrator wrap."""
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 from dm_agent.api.management import reconstruct_transcript
@@ -154,7 +155,9 @@ def test_reconstruct_transcript_skips_tool_and_thinking_blocks():
 
 
 def _char(**kw):
-    base = dict(name="X", is_pc=True, stats={}, hp=10, max_hp=10, ac=10, notes="")
+    base = dict(
+        id=uuid.uuid4(), name="X", is_pc=True, stats={}, hp=10, max_hp=10, ac=10, notes=""
+    )
     base.update(kw)
     return SimpleNamespace(**base)
 

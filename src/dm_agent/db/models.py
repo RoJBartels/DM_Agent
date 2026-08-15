@@ -48,7 +48,8 @@ class Campaign(Base):
     # the backfill migration wrapped every pre-M2i campaign in its own world.
     world_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("worlds.id"), index=True)
     name: Mapped[str] = mapped_column(Text)
-    # Per-campaign preferences (M2g); currently just {"auto_resolve_simple": bool}.
+    # Per-campaign preferences: {"auto_resolve_simple": bool} (M2g) and
+    # {"play_mode": "single" | "multiplayer"} (M2e refinement; absent = single).
     # Free-form so future toggles need no migration. Defaults to {} for old rows.
     settings: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")

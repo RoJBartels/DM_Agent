@@ -7,6 +7,7 @@ across restarts.
 """
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -84,7 +85,12 @@ The party. A roster of the campaign's characters comes with each turn when one e
 — it tells you who the party IS (names, whether each is a player's hero or an NPC you voice), \
 never what they do. When a player's message begins "As <Name>:", that character is taking the \
 action this turn; resolve their sheet and speak in their voice. Player agency still binds: you \
-voice the party's NPCs, but you never decide a player-controlled hero's actions for them.
+voice the party's NPCs, but you never decide a player-controlled hero's actions for them. A \
+roster entry marked "not yet in the story" is a hero who has never appeared in play — usually \
+one the player has only just created. Don't write as though they had been there all along: \
+give them an entrance the first time they matter, naming them once the fiction gives you the \
+chance, and if a player acts as them before you have placed them, open by bringing them into \
+the scene.
 
 What the party can do. Each roster entry also lists that character's ability modifiers, \
 proficient skills and saves, tool proficiencies, known spells, and class features — that is \
@@ -134,22 +140,99 @@ AUTO_RESOLVE_NOTE = (
 )
 
 
-def format_party_roster(chars: list[Character]) -> str:
+# Party convergence (M2e refinement), injected as an uncached per-turn block only
+# for campaigns played as one group. A single-player campaign gets nothing: one
+# person running several heroes may quite reasonably want the story told from
+# separate viewpoints, and herding those heroes into one scene would be the bug.
+PLAY_MODE_PARTY = "multiplayer"
+
+_PARTY_MODE_BODY = (
+    "Campaign setting — this campaign is played as ONE party, so no hero sits outside the "
+    "story. A hero the roster marks \"not yet in the story\" is waiting to be written in, and "
+    "the waiting is the thing to fix: give them an entrance within a turn or two. It is enough "
+    "that they meet ONE member of the party — an introduction to a single companion webs them "
+    "in, the whole group need not assemble. Splitting up remains the players' choice; if they "
+    "separate, run it, and never herd them back together on your own. But whenever a scene "
+    "moves the group somewhere new — a journey, a ship, fast travel, a night's rest, any "
+    "transition — account out loud for EVERY hero on the roster, a waiting newcomer included: "
+    "say who comes along, and if someone is left behind, say so and say why. A transition is "
+    "the natural moment to bring a waiting hero in; what you must never do is narrate the party "
+    "moving on as though a hero on the roster did not exist."
+)
+_PARTY_MODE_OPENING = (
+    " This is the opening scene: put every hero on the roster into it, in the same place, so "
+    "nobody begins the campaign off the page. They need not be friends or even acquainted, and "
+    "you still never decide what a player's hero does — but each of them is present, and you "
+    "name them as soon as the fiction gives you the chance."
+)
+
+# Word characters for name matching. Apostrophes stay inside a token so "Val'ka"
+# is one word; everything else splits.
+_WORD = re.compile(r"[a-z0-9']+")
+
+
+def format_party_mode_note(*, opening: bool) -> str:
+    """The party-convergence block for a group campaign. `opening` adds the
+    everyone-meets rule, which only applies to a session's very first turn."""
+    return f"[{_PARTY_MODE_BODY}{_PARTY_MODE_OPENING if opening else ''}]"
+
+
+def _name_tokens(name: str) -> set[str]:
+    """Words of a character's name long enough to identify them in prose."""
+    return {t for t in _WORD.findall(name.lower()) if len(t) >= 3}
+
+
+def newcomer_ids(chars: list[Character], history: list[dict[str, Any]]) -> set[uuid.UUID]:
+    """PCs whose name has never been spoken in this session's play (M2e refinement).
+
+    "Has this hero appeared yet" is the question the narrator actually needs, and
+    the transcript answers it directly — there is no join date on a character, and
+    a row created before play started can still have been left out of every scene.
+    Safe against compaction: `GameSession.history` is kept whole (only the wire
+    copy is condensed), so the scan sees the entire session.
+
+    Deliberately biased toward *not* marking: any word of the name appearing
+    anywhere counts as introduced, so a generic name token ("Brother Grim") just
+    means no nudge — today's behavior. The opposite error would have the DM
+    re-introducing someone the party has travelled with for twenty turns.
+    """
+    spoken = set(_WORD.findall(render_transcript(history).lower()))
+    return {
+        c.id
+        for c in chars
+        if c.is_pc and (tokens := _name_tokens(c.name)) and not (tokens & spoken)
+    }
+
+
+def format_party_roster(
+    chars: list[Character], newcomers: frozenset[uuid.UUID] | set[uuid.UUID] = frozenset()
+) -> str:
     """Render the party as a private "who's here, and what they can do" block for
     the per-turn context. Empty party → "" (injects nothing). PCs are expected to
     be listed first. Each character's capabilities (M2j) follow their line,
-    indented; a sheet with none renders exactly as it did before."""
+    indented; a sheet with none renders exactly as it did before.
+
+    `newcomers` marks heroes who have not appeared in play yet (M2e refinement).
+    The roster states the fact; what to do about it lives in the cached system
+    prompt, which costs nothing to repeat.
+    """
     if not chars:
         return ""
-    lines = [
+    # The marker is for heroes a player is waiting to play. Where the DM's own
+    # NPCs stand in the fiction is the DM's business, so they are never marked.
+    marked = {c.id for c in chars if c.is_pc and c.id in newcomers}
+    header = (
         "[Party roster — the characters in this campaign and what each is capable of. "
         "This is who the party IS, not what they do; player agency remains absolute. "
         "A message beginning \"As <Name>:\" means that character is acting this turn. "
-        "Full sheets (inventory, notes) are available via get_character_sheet.]"
-    ]
+        "Full sheets (inventory, notes) are available via get_character_sheet."
+    )
+    if marked:
+        header += " An entry marked \"not yet in the story\" has never appeared in play."
+    lines = [header + "]"]
     for c in chars:
         stats = c.stats if isinstance(c.stats, dict) else {}
-        role = "PC" if c.is_pc else "NPC"
+        role = ("PC, not yet in the story" if c.id in marked else "PC") if c.is_pc else "NPC"
         cls = str(stats.get("class") or "").strip()
         lvl = stats.get("level")
         klass = f"{cls} {lvl}".strip() if cls else ""
@@ -212,7 +295,12 @@ class Orchestrator:
         gm_context = "\n\n".join(
             b
             for b in (
-                await self._party_roster(game_session.campaign_id),
+                await self._party_roster(game_session.campaign_id, history),
+                # Straight after the roster: it names who is still waiting to be
+                # written in, and this says what to do about them.
+                await self._party_mode_note(
+                    game_session.campaign_id, opening=not turn_starts(history)
+                ),
                 await self._directors_notes(game_session.campaign_id),
                 await self._auto_resolve_note(game_session.campaign_id),
             )
@@ -329,10 +417,11 @@ class Orchestrator:
             raise LookupError(f"campaign {campaign_id} no longer exists")
         return world_id
 
-    async def _party_roster(self, campaign_id: uuid.UUID) -> str:
+    async def _party_roster(self, campaign_id: uuid.UUID, history: list[dict[str, Any]]) -> str:
         """The campaign's characters formatted as a private per-turn roster (M2e),
         or "" if there are none. Tells the narrator who the party IS, never what
-        they do. A failure here must never break a turn."""
+        they do; `history` only decides which heroes are flagged as not yet in the
+        story. A failure here must never break a turn."""
         try:
             async with db_session() as s:
                 chars = (
@@ -342,9 +431,25 @@ class Orchestrator:
                         .order_by(Character.is_pc.desc(), Character.name)
                     )
                 ).scalars().all()
-            return format_party_roster(chars)
+            return format_party_roster(chars, newcomer_ids(list(chars), history))
         except Exception:
             log.exception("party-roster fetch failed for campaign %s", campaign_id)
+            return ""
+
+    async def _party_mode_note(self, campaign_id: uuid.UUID, *, opening: bool) -> str:
+        """Party-convergence guidance (M2e refinement) for a campaign played as one
+        group, else "". Single-player is the default and gets nothing — separate
+        viewpoints are a legitimate way for one person to run several heroes. A
+        fetch failure never breaks a turn."""
+        try:
+            async with db_session() as s:
+                campaign = await s.get(Campaign, campaign_id)
+                group = bool(
+                    campaign and (campaign.settings or {}).get("play_mode") == PLAY_MODE_PARTY
+                )
+            return format_party_mode_note(opening=opening) if group else ""
+        except Exception:
+            log.exception("play-mode fetch failed for campaign %s", campaign_id)
             return ""
 
     async def _auto_resolve_note(self, campaign_id: uuid.UUID) -> str:
