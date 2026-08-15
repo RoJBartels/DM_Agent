@@ -12,6 +12,7 @@ from dm_agent.db.models import (
     Node,
     RulesChunk,
     StoryBeat,
+    World,
     WorldFlag,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "Node",
     "RulesChunk",
     "StoryBeat",
+    "World",
     "WorldFlag",
     "db_session",
     "get_engine",

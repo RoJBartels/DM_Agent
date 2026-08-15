@@ -5,6 +5,7 @@
 
 const ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
 const LS_CAMPAIGN = "dm.campaign";
+const LS_WORLD = "dm.world";
 
 // --- SRD 5e helpers for the character creator (M2f, M2j) -------------------
 // Hardcoded 5e on purpose — the M8 multi-ruleset pass generalizes this later.
@@ -166,9 +167,14 @@ const el = (id) => document.getElementById(id);
 const overlay = el("overlay");
 const modal = el("modal");
 
-let campaigns = [];
+let worlds = [];
+let activeWorldId = null;
+let campaigns = []; // only the active world's — unrelated settings never mix (M2i)
 let activeCampaignId = null;
 let party = []; // characters of the active campaign (drives menu roster + stage selector)
+
+const activeWorld = () => worlds.find((w) => w.id === activeWorldId);
+const activeCampaign = () => campaigns.find((c) => c.id === activeCampaignId);
 
 // --- fetch helpers ---------------------------------------------------------
 
@@ -203,15 +209,171 @@ function closeModal() {
 }
 overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
 
+// --- worlds (M2i) ----------------------------------------------------------
+//
+// The world is the isolation boundary: everything below (campaigns, their
+// characters, their stories) is loaded per world, so two unrelated settings can
+// live on the same box without ever showing up in each other's menus.
+
+async function loadWorlds() {
+  worlds = await api("/api/worlds");
+  if (worlds.length === 0) {
+    // Bootstrap the out-of-the-box demo so a fresh DB is still playable.
+    await api("/api/demo-session", { method: "POST" });
+    worlds = await api("/api/worlds");
+  }
+  return worlds;
+}
+
+async function selectWorld(id) {
+  activeWorldId = id;
+  localStorage.setItem(LS_WORLD, id);
+  el("world-name").textContent = activeWorld()?.name || "—";
+  await loadCampaigns();
+  // Keep the current campaign if it lives here; otherwise fall back to the first.
+  const keep = campaigns.some((c) => c.id === activeCampaignId);
+  renderStartWorlds();
+  renderWorldDetail();
+  if (campaigns.length) {
+    await selectCampaign(keep ? activeCampaignId : campaigns[0].id);
+  } else {
+    activeCampaignId = null;
+    party = [];
+    window.Stage.setParty([]);
+    renderParty([]);
+    renderStartCampaigns();
+    renderStartDetail();
+  }
+}
+
+async function createWorld(name, description) {
+  const w = await api("/api/worlds", {
+    method: "POST",
+    body: JSON.stringify({ name: name.trim(), description: (description || "").trim() }),
+  });
+  worlds.push(w);
+  return w;
+}
+
+function renderStartWorlds() {
+  const box = el("start-worlds");
+  box.innerHTML = "";
+  for (const w of worlds) {
+    const card = document.createElement("div");
+    card.className = "start-world" + (w.id === activeWorldId ? " active" : "");
+    const bits = [
+      `${w.campaign_count} campaign${w.campaign_count === 1 ? "" : "s"}`,
+      w.node_count ? `${w.node_count} entities` : "no lore yet",
+    ];
+    card.innerHTML =
+      `<span class="sw-name">${esc(w.name)}</span>` +
+      `<span class="sw-meta">${bits.join(" · ")}</span>`;
+    card.addEventListener("click", () => selectWorld(w.id));
+    box.appendChild(card);
+  }
+}
+
+function renderWorldDetail() {
+  const detail = el("start-world-detail");
+  const w = activeWorld();
+  if (!w) { detail.innerHTML = ""; return; }
+  detail.innerHTML = `
+    <h2>${esc(w.name)}</h2>
+    ${w.description ? `<p class="world-desc">${esc(w.description)}</p>` : ""}
+    <div class="start-actions">
+      <button data-w="lore" class="ghost small">⇪ Lore</button>
+      <button data-w="graph" class="ghost small" ${w.node_count ? "" : "disabled"}>🕸 Explore</button>
+      <button data-w="edit" class="ghost small">✎ Edit</button>
+      <button data-w="delete" class="ghost small danger">🗑 Delete world</button>
+    </div>`;
+  detail.querySelector('[data-w="lore"]').addEventListener("click", () => openUploadModal("world"));
+  detail.querySelector('[data-w="graph"]').addEventListener("click", () => openGraph(w.id, w.name));
+  detail.querySelector('[data-w="edit"]').addEventListener("click", () => openWorldModal(w));
+  detail.querySelector('[data-w="delete"]').addEventListener("click", () => deleteWorld(w));
+}
+
+function openWorldModal(w) {
+  openModal(`
+    <h2>Edit world</h2>
+    <div class="field"><label>Name</label>
+      <input id="w-name" value="${esc(w.name)}"></div>
+    <div class="field"><label>Description <span class="muted">— for you, not the DM</span></label>
+      <textarea id="w-desc" style="min-height:5rem">${esc(w.description)}</textarea></div>
+    <div class="field">
+      <label>Lore</label>
+      <div class="muted" style="font-size:0.8rem">
+        ${w.node_count} entities on record.
+        Re-uploading replaces the graph; deleting it keeps the world and its campaigns.
+      </div>
+      <div class="start-actions" style="margin-top:0.5rem">
+        <button id="w-relore" class="ghost small">⇪ Re-ingest lore</button>
+        <button id="w-dellore" class="ghost small danger" ${w.node_count ? "" : "disabled"}>
+          🗑 Delete lore
+        </button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="w-cancel" class="ghost">Cancel</button>
+      <button id="w-save">Save</button>
+    </div>`);
+  el("w-cancel").addEventListener("click", closeModal);
+  el("w-relore").addEventListener("click", () => openUploadModal("world"));
+  el("w-dellore").addEventListener("click", () => deleteLore(w));
+  el("w-save").addEventListener("click", async () => {
+    const name = el("w-name").value.trim();
+    if (!name) return;
+    try {
+      const updated = await api(`/api/worlds/${w.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, description: el("w-desc").value }),
+      });
+      Object.assign(w, updated);
+      closeModal();
+      el("world-name").textContent = updated.name;
+      renderStartWorlds();
+      renderWorldDetail();
+    } catch (err) {
+      alert(`Couldn't save — ${err.message}`);
+    }
+  });
+}
+
+async function deleteLore(w) {
+  if (!confirm(`Delete all lore for "${w.name}"? Campaigns and characters are kept.`)) return;
+  try {
+    const counts = await api(`/api/worlds/${w.id}/lore`, { method: "DELETE" });
+    w.node_count = 0;
+    closeModal();
+    await refreshMenu();
+    alert(`Removed ${counts.nodes} entities and ${counts.edges} relationships.`);
+  } catch (err) {
+    alert(`Couldn't delete lore — ${err.message}`);
+  }
+}
+
+// The server refuses while campaigns remain, on purpose: deleting a setting must
+// never quietly take somebody's saved games with it.
+async function deleteWorld(w) {
+  if (!confirm(`Delete the world "${w.name}" and all its lore?`)) return;
+  try {
+    await api(`/api/worlds/${w.id}`, { method: "DELETE" });
+    worlds = worlds.filter((x) => x.id !== w.id);
+    if (!worlds.length) worlds = await loadWorlds();
+    await selectWorld(worlds[0].id);
+  } catch (err) {
+    alert(
+      err.message.includes("409")
+        ? `${w.name} still has campaigns in it. Delete those first — each one takes its ` +
+          `characters and play history with it.`
+        : `Couldn't delete the world — ${err.message}`
+    );
+  }
+}
+
 // --- campaigns -------------------------------------------------------------
 
 async function loadCampaigns() {
-  campaigns = await api("/api/campaigns");
-  if (campaigns.length === 0) {
-    // Bootstrap the out-of-the-box demo so a fresh DB is still playable.
-    await api("/api/demo-session", { method: "POST" });
-    campaigns = await api("/api/campaigns");
-  }
+  campaigns = await api(`/api/campaigns?world_id=${activeWorldId}`);
   renderCampaignSelect();
 }
 
@@ -224,9 +386,12 @@ function renderCampaignSelect() {
 }
 
 function renderCampaignStatuses() {
-  const campaign = campaigns.find((c) => c.id === activeCampaignId);
-  el("world-status").textContent = campaign?.has_world ? "world loaded ✓" : "no world yet";
-  el("story-status").textContent = campaign?.has_story ? "guide loaded ✓" : "no guide yet";
+  const w = activeWorld();
+  el("world-name").textContent = w?.name || "—";
+  el("world-status").textContent = w?.node_count
+    ? `${w.node_count} entities ✓`
+    : "no lore yet";
+  el("story-status").textContent = activeCampaign()?.has_story ? "guide loaded ✓" : "no guide yet";
 }
 
 // Selecting a campaign loads its party and refreshes the menu — it no longer
@@ -250,19 +415,48 @@ async function enterPlay() {
 async function createCampaign(name) {
   const c = await api("/api/campaigns", {
     method: "POST",
-    body: JSON.stringify({ name: name.trim() }),
+    body: JSON.stringify({ name: name.trim(), world_id: activeWorldId }),
   });
   campaigns.push(c);
+  const w = activeWorld();
+  if (w) w.campaign_count += 1;
   renderCampaignSelect();
   return c;
 }
 
+// A campaign owns its characters, its story guide and its play; the world's canon
+// is not its to delete, and any sibling campaign keeps playing.
+async function deleteCampaign(c) {
+  if (
+    !confirm(
+      `Delete the campaign "${c.name}"? Its characters, story guide and play history ` +
+        `go with it. The world's lore stays.`
+    )
+  ) return;
+  try {
+    await api(`/api/campaigns/${c.id}`, { method: "DELETE" });
+    if (activeCampaignId === c.id) activeCampaignId = null;
+    await selectWorld(activeWorldId);
+  } catch (err) {
+    alert(`Couldn't delete the campaign — ${err.message}`);
+  }
+}
+
+// Re-read everything the menu shows, keeping the current selections.
+async function refreshMenu() {
+  worlds = await api("/api/worlds");
+  if (!worlds.some((w) => w.id === activeWorldId)) activeWorldId = worlds[0]?.id ?? null;
+  await loadCampaigns();
+  renderStartWorlds();
+  renderWorldDetail();
+  renderStartCampaigns();
+  renderCampaignStatuses();
+  renderStartDetail();
+}
+
 // Re-open the start menu mid-play; refresh flags first so it's current.
 async function showStartScreen() {
-  campaigns = await api("/api/campaigns");
-  renderCampaignSelect();
-  renderStartCampaigns();
-  renderStartDetail();
+  await refreshMenu();
   el("start-screen").classList.add("open");
 }
 
@@ -332,8 +526,9 @@ function renderStartDetail() {
     ${recap}
     <div class="start-actions">
       <button data-add class="ghost small">＋ Character</button>
-      <button data-up="world" class="ghost small">⇪ World lore</button>
       <button data-up="story" class="ghost small">⇪ Adventure</button>
+      ${c.has_story ? `<button data-story class="ghost small">📜 Edit beats</button>` : ""}
+      <button data-del class="ghost small danger">🗑 Delete campaign</button>
     </div>
     <label class="setting">
       <input type="checkbox" data-setting="auto_resolve_simple" ${autoResolve ? "checked" : ""}>
@@ -346,8 +541,10 @@ function renderStartDetail() {
   const recapBtn = detail.querySelector("[data-recap]");
   if (recapBtn) recapBtn.addEventListener("click", () => toggleRecap(recapBtn));
   detail.querySelector("[data-add]").addEventListener("click", () => openCharacterModal(null));
-  detail.querySelector('[data-up="world"]').addEventListener("click", () => openUploadModal("world"));
   detail.querySelector('[data-up="story"]').addEventListener("click", () => openUploadModal("story"));
+  detail.querySelector("[data-del]").addEventListener("click", () => deleteCampaign(c));
+  const storyBtn = detail.querySelector("[data-story]");
+  if (storyBtn) storyBtn.addEventListener("click", () => openStoryModal(c));
   detail.querySelector('[data-setting="auto_resolve_simple"]').addEventListener("change", (e) => {
     updateCampaignSetting("auto_resolve_simple", e.target.checked);
   });
@@ -383,6 +580,120 @@ async function toggleRecap(btn) {
   } catch (err) {
     box.textContent = `Couldn't write the recap — ${err.message}`;
   }
+}
+
+// --- story-guide editor (M2i) ----------------------------------------------
+//
+// Beats are advisory, so editing one can't break a campaign — which is exactly
+// why they should be editable: fixing an extraction the model got slightly wrong
+// shouldn't mean re-uploading the whole adventure.
+
+const BEAT_STATUSES = ["upcoming", "active", "completed", "skipped"];
+
+async function openStoryModal(campaign) {
+  openModal(`<h2>Story guide</h2><p class="muted">loading beats…</p>`);
+  let beats;
+  try {
+    beats = await api(`/api/campaigns/${campaign.id}/story`);
+  } catch (err) {
+    openModal(`<h2>Story guide</h2><p class="muted">Couldn't load — ${esc(err.message)}</p>`);
+    return;
+  }
+  renderStoryModal(campaign, beats);
+}
+
+function renderStoryModal(campaign, beats) {
+  const rows = beats
+    .map(
+      (b, i) => `
+      <div class="studio-row" data-beat="${b.id}">
+        <span class="sr-type">${esc(b.status)}</span>
+        <span class="sr-name">${i + 1}. ${esc(b.title)}
+          ${b.entity_ids.length ? `<span class="sr-sub">· ${esc(b.entity_ids.join(", "))}</span>` : ""}
+        </span>
+        <button data-edit class="ghost small">✎</button>
+        <button data-del class="ghost small danger">🗑</button>
+      </div>`
+    )
+    .join("");
+  openModal(`
+    <h2>Story guide — ${esc(campaign.name)}</h2>
+    <p class="muted">The DM paces toward the active beat but never enforces it; the party
+      can always go off-book. Editing here is safe.</p>
+    <div class="studio-list">${rows || `<p class="muted">No beats.</p>`}</div>
+    <div class="modal-actions">
+      <button id="s-delall" class="ghost danger" ${beats.length ? "" : "disabled"}>
+        🗑 Delete guide
+      </button>
+      <button id="s-close">Done</button>
+    </div>`);
+  el("s-close").addEventListener("click", async () => { closeModal(); await refreshMenu(); });
+  el("s-delall").addEventListener("click", async () => {
+    if (!confirm(`Delete the whole guide? "${campaign.name}" goes back to improvised play.`)) return;
+    try {
+      await api(`/api/campaigns/${campaign.id}/story`, { method: "DELETE" });
+      closeModal();
+      await refreshMenu();
+    } catch (err) {
+      alert(`Couldn't delete — ${err.message}`);
+    }
+  });
+  for (const row of modal.querySelectorAll("[data-beat]")) {
+    const beat = beats.find((b) => b.id === row.dataset.beat);
+    row.querySelector("[data-edit]").addEventListener("click", () =>
+      openBeatModal(campaign, beat, beats)
+    );
+    row.querySelector("[data-del]").addEventListener("click", async () => {
+      if (!confirm(`Delete the beat "${beat.title}"?`)) return;
+      try {
+        await api(`/api/story-beats/${beat.id}`, { method: "DELETE" });
+        renderStoryModal(campaign, beats.filter((b) => b.id !== beat.id));
+      } catch (err) {
+        alert(`Couldn't delete — ${err.message}`);
+      }
+    });
+  }
+}
+
+function openBeatModal(campaign, beat, beats) {
+  openModal(`
+    <h2>Edit beat</h2>
+    <div class="field"><label>Title</label><input id="b-title" value="${esc(beat.title)}"></div>
+    <div class="field"><label>Status</label>
+      <select id="b-status">
+        ${BEAT_STATUSES.map(
+          (s) => `<option value="${s}" ${s === beat.status ? "selected" : ""}>${s}</option>`
+        ).join("")}
+      </select></div>
+    <div class="field"><label>Summary <span class="muted">— what the DM should know</span></label>
+      <textarea id="b-summary" style="min-height:6rem">${esc(beat.summary)}</textarea></div>
+    <div class="field"><label>Read-aloud <span class="muted">— optional boxed text</span></label>
+      <textarea id="b-read" style="min-height:4rem">${esc(beat.read_aloud)}</textarea></div>
+    <div class="field"><label>Trigger <span class="muted">— when this beat becomes active</span></label>
+      <input id="b-trigger" value="${esc(beat.trigger_condition)}"></div>
+    <div class="modal-actions">
+      <button id="b-back" class="ghost">Back</button>
+      <button id="b-save">Save</button>
+    </div>`);
+  el("b-back").addEventListener("click", () => renderStoryModal(campaign, beats));
+  el("b-save").addEventListener("click", async () => {
+    try {
+      const updated = await api(`/api/story-beats/${beat.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: el("b-title").value.trim() || beat.title,
+          status: el("b-status").value,
+          summary: el("b-summary").value,
+          read_aloud: el("b-read").value,
+          trigger_condition: el("b-trigger").value,
+        }),
+      });
+      Object.assign(beat, updated);
+      renderStoryModal(campaign, beats);
+    } catch (err) {
+      alert(`Couldn't save — ${err.message}`);
+    }
+  });
 }
 
 // Persist a single per-campaign setting (M2g). settings is stored as one blob, so
@@ -854,22 +1165,29 @@ async function fetchLoreForCreator() {
 // Both flows are the same shape — paste/choose a doc, POST it, poll a job — so
 // they share one modal driven by this config.
 
+// Two upload flows through one modal. They differ in what they attach to: lore
+// belongs to the WORLD (every campaign in it shares that canon), a story guide to
+// one campaign (it's that playthrough's arc).
 const UPLOADS = {
   world: {
-    hasFlag: "has_world",
+    scope: "world",
+    subject: () => activeWorld(),
+    has: (w) => w && w.node_count > 0,
     title: "Upload world lore",
     intro: `Paste worldbuilding markdown. The build extracts a typed lore graph
       (characters, locations, factions…), embeds it, and writes community
-      summaries. This can take a minute.`,
-    rebuildWarn: "already has a world — rebuilding replaces its lore graph",
+      summaries. Every campaign in this world draws on it. This can take a minute.`,
+    rebuildWarn: "already has lore — rebuilding replaces the whole graph",
     placeholder: "# The Barony of Aldenmoor&#10;&#10;Duke Aldric Vane rules...",
-    post: (id) => `/api/campaigns/${id}/world`,
+    post: (id) => `/api/worlds/${id}/lore`,
     poll: (job) => `/api/world-jobs/${job}`,
     building: "building… (extracting entities, embedding, clustering)",
     done: (s) => `✓ built: ${s.nodes} nodes, ${s.edges} edges, ${s.communities} communities.`,
   },
   story: {
-    hasFlag: "has_story",
+    scope: "campaign",
+    subject: () => activeCampaign(),
+    has: (c) => Boolean(c && c.has_story),
     title: "Upload adventure guide",
     intro: `Paste a pre-written adventure or your own outline. It's extracted into
       an ordered set of advisory story beats the DM uses to pace the game — never
@@ -884,13 +1202,21 @@ const UPLOADS = {
 };
 
 el("upload-world").addEventListener("click", () => openUploadModal("world"));
+el("explore-world").addEventListener("click", () => {
+  const w = activeWorld();
+  if (w) openGraph(w.id, w.name);
+});
 el("upload-story").addEventListener("click", () => openUploadModal("story"));
 
 function openUploadModal(kind) {
   const cfg = UPLOADS[kind];
-  const campaign = campaigns.find((c) => c.id === activeCampaignId);
-  const warn = campaign?.[cfg.hasFlag]
-    ? `<p class="muted">This campaign ${cfg.rebuildWarn}.</p>`
+  const subject = cfg.subject();
+  if (!subject) {
+    alert(kind === "story" ? "Pick a campaign first." : "Pick a world first.");
+    return;
+  }
+  const warn = cfg.has(subject)
+    ? `<p class="muted">${esc(subject.name)} ${cfg.rebuildWarn}.</p>`
     : "";
   openModal(`
     <h2>${esc(cfg.title)}</h2>
@@ -910,10 +1236,10 @@ function openUploadModal(kind) {
     const file = e.target.files[0];
     if (file) el("u-text").value = await file.text();
   });
-  el("u-build").addEventListener("click", () => submitUpload(kind));
+  el("u-build").addEventListener("click", () => submitUpload(kind, subject.id));
 }
 
-async function submitUpload(kind) {
+async function submitUpload(kind, subjectId) {
   const cfg = UPLOADS[kind];
   const text = el("u-text").value.trim();
   const jobStatus = el("job-status");
@@ -923,7 +1249,7 @@ async function submitUpload(kind) {
   jobStatus.textContent = "starting build…";
 
   try {
-    const { job_id } = await api(cfg.post(activeCampaignId), {
+    const { job_id } = await api(cfg.post(subjectId), {
       method: "POST",
       body: JSON.stringify({ documents: [text] }),
     });
@@ -938,12 +1264,7 @@ async function submitUpload(kind) {
       if (job.status === "done") {
         jobStatus.textContent = cfg.done(job.stats || {});
         build.textContent = "Done";
-        // Refresh has_world/has_story flags + sidebar + start menu.
-        campaigns = await api("/api/campaigns");
-        renderCampaignSelect();
-        renderCampaignStatuses();
-        renderStartCampaigns();
-        renderStartDetail();
+        await refreshMenu(); // node counts, has_story, the sidebar statuses
         return;
       }
       jobStatus.innerHTML = `<span class="error">✗ build failed: ${esc(job.error)}</span>`;
@@ -967,13 +1288,24 @@ el("start-new-campaign").addEventListener("click", async () => {
   const name = prompt("New campaign name:");
   if (!name || !name.trim()) return;
   const c = await createCampaign(name);
+  renderStartWorlds();
   await selectCampaign(c.id); // stay on the menu; player enters when ready
+});
+el("start-new-world").addEventListener("click", async () => {
+  const name = prompt("New world name:");
+  if (!name || !name.trim()) return;
+  const description = prompt("A line about it (optional):") || "";
+  const w = await createWorld(name, description);
+  await selectWorld(w.id);
 });
 
 (async function init() {
-  await loadCampaigns();
-  const stored = localStorage.getItem(LS_CAMPAIGN);
-  const initial = campaigns.find((c) => c.id === stored) ? stored : campaigns[0].id;
-  await selectCampaign(initial); // loads party + menu, does not connect
+  await loadWorlds();
+  const storedWorld = localStorage.getItem(LS_WORLD);
+  const storedCampaign = localStorage.getItem(LS_CAMPAIGN);
+  // Restore the last campaign only if it still lives in the world we're opening —
+  // otherwise selectWorld falls back to that world's first campaign.
+  activeCampaignId = storedCampaign;
+  await selectWorld(worlds.some((w) => w.id === storedWorld) ? storedWorld : worlds[0].id);
   el("start-screen").classList.add("open");
 })();

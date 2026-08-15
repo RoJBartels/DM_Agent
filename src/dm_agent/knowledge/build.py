@@ -3,8 +3,9 @@ summaries, and SRD text -> rules_chunks. This is the offline, expensive half of
 the hybrid; play-time retrieval reads what this produces.
 
 Usage:
-    python -m dm_agent.knowledge.build world --campaign "Demo Campaign" doc1.md doc2.md
+    python -m dm_agent.knowledge.build world --world "Aldenmoor" doc1.md doc2.md
     python -m dm_agent.knowledge.build rules --ruleset dnd5e srd.txt
+    python -m dm_agent.knowledge.build story --campaign "Demo Campaign" adventure.md
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from dm_agent.db import (
     Edge,
     Node,
     RulesChunk,
+    World,
     db_session,
 )
 from dm_agent.knowledge.communities import detect_communities, summarize_community
@@ -35,14 +37,33 @@ from dm_agent.knowledge.store import GraphStore
 log = logging.getLogger(__name__)
 
 
+async def resolve_world(name: str) -> uuid.UUID:
+    """Get-or-create a world by name; return its id."""
+    async with db_session() as session:
+        world = (
+            await session.execute(select(World).where(World.name == name))
+        ).scalar_one_or_none()
+        if world is None:
+            world = World(name=name)
+            session.add(world)
+            await session.flush()
+        wid = world.id
+        await session.commit()
+    return wid
+
+
 async def resolve_campaign(name: str) -> uuid.UUID:
-    """Get-or-create a campaign by name; return its id."""
+    """Get-or-create a campaign by name; return its id. A campaign needs a world
+    (M2i), so a new one gets its own, named after it."""
     async with db_session() as session:
         campaign = (
             await session.execute(select(Campaign).where(Campaign.name == name))
         ).scalar_one_or_none()
         if campaign is None:
-            campaign = Campaign(name=name)
+            world = World(name=name)
+            session.add(world)
+            await session.flush()
+            campaign = Campaign(name=name, world_id=world.id)
             session.add(campaign)
             await session.flush()
         cid = campaign.id
@@ -51,14 +72,16 @@ async def resolve_campaign(name: str) -> uuid.UUID:
 
 
 async def build_world(
-    campaign_id: uuid.UUID,
+    world_id: uuid.UUID,
     documents: list[str],
     *,
     embedder: EmbeddingProvider | None = None,
     client: anthropic.AsyncAnthropic | None = None,
 ) -> dict[str, int]:
-    """Full world build for a campaign. Idempotent: wipes and rebuilds this
-    campaign's canon (nodes/edges/community_summaries); leaves session history."""
+    """Full canon build for a world. Idempotent: wipes and rebuilds this world's
+    canon (nodes/edges/community_summaries); leaves campaigns and their play
+    untouched — every campaign in the world picks the new canon up on its next
+    lookup."""
     settings = get_settings()
     embedder = embedder or get_embedder()
     client = client or anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
@@ -86,17 +109,17 @@ async def build_world(
 
     # 4. Wipe + write canon.
     async with db_session() as session:
-        await session.execute(delete(Edge).where(Edge.campaign_id == campaign_id))
+        await session.execute(delete(Edge).where(Edge.world_id == world_id))
         await session.execute(
-            delete(CommunitySummary).where(CommunitySummary.campaign_id == campaign_id)
+            delete(CommunitySummary).where(CommunitySummary.world_id == world_id)
         )
-        await session.execute(delete(Node).where(Node.campaign_id == campaign_id))
+        await session.execute(delete(Node).where(Node.world_id == world_id))
         await session.flush()
 
         for node, vec in zip(merged.nodes, vectors, strict=True):
             session.add(
                 Node(
-                    campaign_id=campaign_id,
+                    world_id=world_id,
                     id=node.id,
                     type=node.type,
                     name=node.name,
@@ -107,7 +130,7 @@ async def build_world(
                 )
             )
         for e in merged.edges:
-            await store.add_edge(session, campaign_id, src=e.src, dst=e.dst, type=e.type)
+            await store.add_edge(session, world_id, src=e.src, dst=e.dst, type=e.type)
         await session.commit()
 
     # 5. Community summaries (Haiku), embedded and stored.
@@ -130,7 +153,7 @@ async def build_world(
             ]
             session.add(
                 CommunitySummary(
-                    campaign_id=campaign_id,
+                    world_id=world_id,
                     community_id=cid,
                     member_ids=member_ids,
                     text=text,
@@ -196,8 +219,8 @@ async def _main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="dm-build", description="Knowledge static build")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    pw = sub.add_parser("world", help="build a campaign's lore graph from documents")
-    pw.add_argument("--campaign", required=True, help="campaign name (get-or-create)")
+    pw = sub.add_parser("world", help="build a world's lore graph from documents")
+    pw.add_argument("--world", required=True, help="world name (get-or-create)")
     pw.add_argument("paths", nargs="+", help="markdown/text worldbuilding docs")
 
     pr = sub.add_parser("rules", help="ingest a rules corpus into rules_chunks")
@@ -211,9 +234,9 @@ async def _main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.cmd == "world":
-        campaign_id = await resolve_campaign(args.campaign)
-        stats = await build_world(campaign_id, _read(args.paths))
-        print(f"Built world for campaign {campaign_id}: {stats}")
+        world_id = await resolve_world(args.world)
+        stats = await build_world(world_id, _read(args.paths))
+        print(f"Built lore for world {world_id}: {stats}")
     elif args.cmd == "rules":
         n = await ingest_rules(_read(args.paths), args.ruleset)
         print(f"Ingested {n} rules chunks for ruleset {args.ruleset!r}")

@@ -185,7 +185,13 @@ class Orchestrator:
                     s.add(EventLog(session_id=game_session.id, event=event.model_dump(mode="json")))
                     await s.commit()
 
+        # Canon lives on the world, not the campaign (M2i), so lore lookups need
+        # both scopes. Resolved once per turn — one row, and every later fetch
+        # (roster, notes, summarizer) reuses it.
+        world_id = await self._world_id(game_session.campaign_id)
+
         ctx = ToolContext(
+            world_id=world_id,
             campaign_id=game_session.campaign_id,
             session_id=game_session.id,
             emit=emit_and_log,
@@ -308,8 +314,20 @@ class Orchestrator:
                     await s.commit()
             game_session.history = messages
             await emit_and_log(TurnEnd(turn_id=turn_id))
-            await self._maybe_summarize_scene(game_session, messages)
+            await self._maybe_summarize_scene(game_session, world_id, messages)
             await self._maybe_compact(game_session)
+
+    async def _world_id(self, campaign_id: uuid.UUID) -> uuid.UUID:
+        """The world this campaign is played in. Every campaign has one — the M2i
+        migration wrapped the pre-existing ones — so a miss means the session
+        points at a deleted campaign, which is not a turn we can resolve."""
+        async with db_session() as s:
+            world_id = (
+                await s.execute(select(Campaign.world_id).where(Campaign.id == campaign_id))
+            ).scalar_one_or_none()
+        if world_id is None:
+            raise LookupError(f"campaign {campaign_id} no longer exists")
+        return world_id
 
     async def _party_roster(self, campaign_id: uuid.UUID) -> str:
         """The campaign's characters formatted as a private per-turn roster (M2e),
@@ -354,7 +372,7 @@ class Orchestrator:
             return ""
 
     async def _maybe_summarize_scene(
-        self, game_session: GameSession, messages: list[dict[str, Any]]
+        self, game_session: GameSession, world_id: uuid.UUID, messages: list[dict[str, Any]]
     ) -> None:
         """Every SUMMARIZE_EVERY player turns, distill the recent scene into a
         dynamic knowledge chunk. Never let a summarization failure break play."""
@@ -364,7 +382,9 @@ class Orchestrator:
         try:
             from dm_agent.knowledge.summarizer import summarize_scene
 
-            await summarize_scene(game_session.campaign_id, game_session.id, transcript)
+            await summarize_scene(
+                world_id, game_session.campaign_id, game_session.id, transcript
+            )
         except Exception:
             log.exception("scene summarization failed for session %s", game_session.id)
 

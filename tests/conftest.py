@@ -2,7 +2,7 @@
 
 A keyword bag-of-words embedder stands in for sentence-transformers so ranking
 tests are deterministic and torch-free. The `campaign` fixture provisions a
-throwaway campaign+session in the real Postgres and skips if the DB is down.
+throwaway world+campaign+session in the real Postgres and skips if the DB is down.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from dm_agent.db import (
     GameSession,
     Node,
     StoryBeat,
+    World,
     db_session,
 )
 
@@ -65,18 +66,22 @@ def fake_embedder() -> FakeEmbedder:
 
 
 @pytest_asyncio.fixture
-async def campaign() -> tuple[uuid.UUID, uuid.UUID]:
-    """Yield (campaign_id, session_id) for a fresh throwaway campaign; clean up
-    after. Skips the test if Postgres is unreachable."""
+async def campaign() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Yield (world_id, campaign_id, session_id) for a fresh throwaway campaign in
+    a throwaway world; clean up after. Canon is world-scoped and play is
+    campaign-scoped (M2i), so a test that touches the knowledge layer needs both.
+    Skips the test if Postgres is unreachable."""
     try:
         async with db_session() as s:
             await s.execute(text("SELECT 1"))
     except Exception as e:  # pragma: no cover - environment guard
         pytest.skip(f"Postgres not reachable: {e}")
 
-    campaign_id = uuid.uuid4()
+    world_id, campaign_id = uuid.uuid4(), uuid.uuid4()
     async with db_session() as s:
-        camp = Campaign(id=campaign_id, name=f"test-{campaign_id}")
+        s.add(World(id=world_id, name=f"test-world-{world_id}"))
+        await s.flush()
+        camp = Campaign(id=campaign_id, world_id=world_id, name=f"test-{campaign_id}")
         s.add(camp)
         await s.flush()
         sess = GameSession(campaign_id=campaign_id, title="test", history=[])
@@ -86,16 +91,17 @@ async def campaign() -> tuple[uuid.UUID, uuid.UUID]:
         await s.commit()
 
     try:
-        yield campaign_id, session_id
+        yield world_id, campaign_id, session_id
     finally:
         async with db_session() as s:
             await s.execute(delete(DynamicChunk).where(DynamicChunk.campaign_id == campaign_id))
             await s.execute(
-                delete(CommunitySummary).where(CommunitySummary.campaign_id == campaign_id)
+                delete(CommunitySummary).where(CommunitySummary.world_id == world_id)
             )
-            await s.execute(delete(Edge).where(Edge.campaign_id == campaign_id))
-            await s.execute(delete(Node).where(Node.campaign_id == campaign_id))
+            await s.execute(delete(Edge).where(Edge.world_id == world_id))
+            await s.execute(delete(Node).where(Node.world_id == world_id))
             await s.execute(delete(StoryBeat).where(StoryBeat.campaign_id == campaign_id))
             await s.execute(delete(GameSession).where(GameSession.campaign_id == campaign_id))
             await s.execute(delete(Campaign).where(Campaign.id == campaign_id))
+            await s.execute(delete(World).where(World.id == world_id))
             await s.commit()

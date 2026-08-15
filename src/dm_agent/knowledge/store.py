@@ -1,9 +1,11 @@
 """GraphStore: the Postgres-backed canon graph + vector search primitives.
 
 This is the swap seam the plan calls out — a future Neo4j impl would match these
-method signatures. Everything is campaign-scoped. Vector columns are compared
-with pgvector cosine distance (smaller = closer); rows without an embedding are
-excluded from ranked search.
+method signatures. Canon (nodes/edges/community summaries) is **world**-scoped
+since M2i; only `search_dynamic_chunks` is campaign-scoped, because a dynamic
+chunk is one party's play rather than a fact about the setting. Vector columns
+are compared with pgvector cosine distance (smaller = closer); rows without an
+embedding are excluded from ranked search.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ class GraphStore:
     async def upsert_node(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         *,
         id: str,
         type: str,
@@ -54,11 +56,11 @@ class GraphStore:
         prose: str,
         embedding: list[float] | None = None,
     ) -> None:
-        node = await session.get(Node, (campaign_id, id))
+        node = await session.get(Node, (world_id, id))
         if node is None:
             session.add(
                 Node(
-                    campaign_id=campaign_id,
+                    world_id=world_id,
                     id=id,
                     type=type,
                     name=name,
@@ -75,7 +77,7 @@ class GraphStore:
     async def add_edge(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         *,
         src: str,
         dst: str,
@@ -83,7 +85,7 @@ class GraphStore:
         props: dict | None = None,
     ) -> None:
         session.add(
-            Edge(campaign_id=campaign_id, src=src, dst=dst, type=type, props=props or {})
+            Edge(world_id=world_id, src=src, dst=dst, type=type, props=props or {})
         )
 
     # ---- read: exact + fuzzy entity resolution ----------------------------
@@ -91,7 +93,7 @@ class GraphStore:
     async def match_entities(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         names: list[str],
         query_vectors: list[list[float]] | None = None,
         per_name_k: int = 2,
@@ -112,7 +114,7 @@ class GraphStore:
             like = f"%{name.strip()}%"
             rows = await session.execute(
                 select(Node.id)
-                .where(Node.campaign_id == campaign_id)
+                .where(Node.world_id == world_id)
                 .where(Node.name.ilike(like))
                 .limit(per_name_k)
             )
@@ -122,7 +124,7 @@ class GraphStore:
             if query_vectors is not None and i < len(query_vectors):
                 vrows = await session.execute(
                     select(Node.id, Node.embedding.cosine_distance(query_vectors[i]).label("d"))
-                    .where(Node.campaign_id == campaign_id)
+                    .where(Node.world_id == world_id)
                     .where(Node.embedding.isnot(None))
                     .order_by(text("d"))
                     .limit(per_name_k)
@@ -136,7 +138,7 @@ class GraphStore:
     async def neighborhood(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         seed_ids: list[str],
         hops: int = 1,
     ) -> list[str]:
@@ -152,26 +154,26 @@ class GraphStore:
                 FROM nbh
                 JOIN LATERAL (
                     SELECT dst AS other FROM edges
-                        WHERE campaign_id = :cid AND src = nbh.id
+                        WHERE world_id = :wid AND src = nbh.id
                     UNION
                     SELECT src AS other FROM edges
-                        WHERE campaign_id = :cid AND dst = nbh.id
+                        WHERE world_id = :wid AND dst = nbh.id
                 ) e ON true
                 WHERE nbh.depth < :hops
             )
             SELECT DISTINCT id FROM nbh
             """
         ).bindparams(bindparam("seeds", type_=ARRAY(Text)))
-        rows = await session.execute(stmt, {"seeds": seed_ids, "cid": campaign_id, "hops": hops})
+        rows = await session.execute(stmt, {"seeds": seed_ids, "wid": world_id, "hops": hops})
         return [r[0] for r in rows]
 
     async def get_nodes(
-        self, session: AsyncSession, campaign_id: uuid.UUID, ids: list[str]
+        self, session: AsyncSession, world_id: uuid.UUID, ids: list[str]
     ) -> list[Node]:
         if not ids:
             return []
         rows = await session.execute(
-            select(Node).where(Node.campaign_id == campaign_id).where(Node.id.in_(ids))
+            select(Node).where(Node.world_id == world_id).where(Node.id.in_(ids))
         )
         return list(rows.scalars())
 
@@ -180,14 +182,14 @@ class GraphStore:
     async def search_nodes(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         query_vector: list[float],
         restrict_ids: list[str] | None = None,
         top_k: int = 6,
     ) -> list[NodeHit]:
         q = (
             select(Node, Node.embedding.cosine_distance(query_vector).label("d"))
-            .where(Node.campaign_id == campaign_id)
+            .where(Node.world_id == world_id)
             .where(Node.embedding.isnot(None))
         )
         if restrict_ids:
@@ -201,7 +203,7 @@ class GraphStore:
     async def search_community_summaries(
         self,
         session: AsyncSession,
-        campaign_id: uuid.UUID,
+        world_id: uuid.UUID,
         query_vector: list[float],
         top_k: int = 2,
     ) -> list[ChunkHit]:
@@ -210,7 +212,7 @@ class GraphStore:
                 CommunitySummary,
                 CommunitySummary.embedding.cosine_distance(query_vector).label("d"),
             )
-            .where(CommunitySummary.campaign_id == campaign_id)
+            .where(CommunitySummary.world_id == world_id)
             .where(CommunitySummary.embedding.isnot(None))
             .order_by(text("d"))
             .limit(top_k)

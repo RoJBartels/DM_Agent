@@ -48,24 +48,30 @@ class _QuestionEntities(BaseModel):
 
 async def gather_context(
     session: AsyncSession,
+    world_id: uuid.UUID,
     campaign_id: uuid.UUID,
     question: str,
     entity_names: list[str],
     embedder: EmbeddingProvider,
     store: GraphStore | None = None,
 ) -> RetrievedContext:
-    """LLM-free: resolve entities, expand the neighborhood, run the vector searches."""
+    """LLM-free: resolve entities, expand the neighborhood, run the vector searches.
+
+    Takes both scopes because the hybrid spans both (M2i): canon belongs to the
+    world and is shared by every campaign played in it, while the dynamic chunks
+    are this campaign's own play and must not leak into a sibling campaign.
+    """
     store = store or GraphStore()
 
     qvec = embedder.embed_one(question)
     name_vecs = embedder.embed(entity_names) if entity_names else []
 
-    seeds = await store.match_entities(session, campaign_id, entity_names, name_vecs or None)
-    neighborhood = await store.neighborhood(session, campaign_id, seeds, hops=2)
+    seeds = await store.match_entities(session, world_id, entity_names, name_vecs or None)
+    neighborhood = await store.neighborhood(session, world_id, seeds, hops=2)
 
     restrict = neighborhood or None
-    node_hits = await store.search_nodes(session, campaign_id, qvec, restrict_ids=restrict, top_k=6)
-    community_hits = await store.search_community_summaries(session, campaign_id, qvec, top_k=2)
+    node_hits = await store.search_nodes(session, world_id, qvec, restrict_ids=restrict, top_k=6)
+    community_hits = await store.search_community_summaries(session, world_id, qvec, top_k=2)
 
     # Recency safety: session events matter even when the entity link is weak, so
     # union neighborhood-restricted chunks with a small unrestricted vector search.
@@ -149,6 +155,7 @@ async def synthesize(
 
 
 async def lookup_lore(
+    world_id: uuid.UUID,
     campaign_id: uuid.UUID,
     question: str,
     *,
@@ -162,11 +169,13 @@ async def lookup_lore(
 
     entity_names = await extract_question_entities(question, client, settings.utility_model)
     async with db_session() as session:
-        ctx = await gather_context(session, campaign_id, question, entity_names, embedder)
+        ctx = await gather_context(
+            session, world_id, campaign_id, question, entity_names, embedder
+        )
 
     if ctx.is_empty():
         return LoreAnswer(
-            text="No lore is on record for this campaign yet — narrate freely.", source_ids=[]
+            text="No lore is on record for this world yet — narrate freely.", source_ids=[]
         )
     answer = await synthesize(question, ctx, client, settings.utility_model)
     return LoreAnswer(text=answer, source_ids=ctx.source_ids)

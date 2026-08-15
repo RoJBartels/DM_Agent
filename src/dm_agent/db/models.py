@@ -17,10 +17,36 @@ class Base(DeclarativeBase):
     type_annotation_map = {dict[str, Any]: JSONB, list[Any]: JSONB}
 
 
+class World(Base):
+    """A setting: the top-level container above campaigns (M2i).
+
+    A world is whatever the user uploads — there is no genre enum and no fixed
+    set of world types. It owns the §2 lore graph (nodes/edges/community
+    summaries), which is what makes two uploaded worlds genuinely unrelated:
+    picking a world decides which campaigns, characters and stories exist.
+    Several campaigns can play in one world and share its canon.
+    """
+
+    __tablename__ = "worlds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Reserved anchor for M8's per-world rules binding — stored, never read yet.
+    # NULL means "the 5e SRD default", which is the only ruleset that exists today.
+    ruleset_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="world")
+
+
 class Campaign(Base):
     __tablename__ = "campaigns"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # The setting this playthrough happens in (M2i). A campaign always has one:
+    # the backfill migration wrapped every pre-M2i campaign in its own world.
+    world_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("worlds.id"), index=True)
     name: Mapped[str] = mapped_column(Text)
     # Per-campaign preferences (M2g); currently just {"auto_resolve_simple": bool}.
     # Free-form so future toggles need no migration. Defaults to {} for old rows.
@@ -29,6 +55,7 @@ class Campaign(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    world: Mapped[World] = relationship(back_populates="campaigns")
     sessions: Mapped[list["GameSession"]] = relationship(back_populates="campaign")
     characters: Mapped[list["Character"]] = relationship(back_populates="campaign")
 
@@ -93,19 +120,22 @@ class EventLog(Base):
 
 # --- Knowledge layer (M2): the hybrid static-canon graph + dynamic session RAG ---
 #
-# Lore is scoped per campaign (a campaign is a world). `id` is a human-readable
-# slug used as the join key in `entity_ids` arrays elsewhere — the composite PK
-# (campaign_id, id) keeps two campaigns' worlds from colliding on the same slug.
+# Canon is scoped per WORLD (M2i re-scoped it from campaign: lore describes a
+# setting, and every campaign played in that setting shares it). `id` is a
+# human-readable slug used as the join key in `entity_ids` arrays elsewhere — the
+# composite PK (world_id, id) keeps two worlds from colliding on the same slug.
 # Edges reference node slugs softly (no FK): a build inserts nodes and edges in
 # any order, and an edge may point at a node the extractor named but didn't emit.
+#
+# `dynamic_chunks` stays CAMPAIGN-scoped on purpose: canon is what the setting
+# is, a dynamic chunk is what one party did in it, and two campaigns in the same
+# world must not read each other's play.
 
 
 class Node(Base):
     __tablename__ = "nodes"
 
-    campaign_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("campaigns.id"), primary_key=True
-    )
+    world_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("worlds.id"), primary_key=True)
     id: Mapped[str] = mapped_column(Text, primary_key=True)  # slug
     type: Mapped[str] = mapped_column(Text)  # Character/Location/Faction/Item/Deity/Event/Law
     name: Mapped[str] = mapped_column(Text)
@@ -119,7 +149,7 @@ class Edge(Base):
     __tablename__ = "edges"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    world_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("worlds.id"))
     src: Mapped[str] = mapped_column(Text)  # node slug
     dst: Mapped[str] = mapped_column(Text)  # node slug
     type: Mapped[str] = mapped_column(Text)  # RULES/LOCATED_IN/MEMBER_OF/ENEMY_OF/...
@@ -130,7 +160,7 @@ class CommunitySummary(Base):
     __tablename__ = "community_summaries"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
+    world_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("worlds.id"))
     community_id: Mapped[int] = mapped_column(Integer)
     member_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     text: Mapped[str] = mapped_column(Text)
@@ -140,8 +170,10 @@ class CommunitySummary(Base):
 class DynamicChunk(Base):
     """Session-history layer: Haiku scene summaries appended as play happens.
 
-    Joined to canon by `entity_ids` (node slugs). `campaign_id` is denormalized
-    from the session so lookup_lore can filter a campaign's chunks without a join.
+    Joined to canon by `entity_ids` (node slugs — resolved against the campaign's
+    world). Stays campaign-scoped after M2i: this is one party's play, not the
+    setting. `campaign_id` is denormalized from the session so lookup_lore can
+    filter a campaign's chunks without a join.
     """
 
     __tablename__ = "dynamic_chunks"

@@ -232,6 +232,77 @@
     margin-top: 1.8rem; width: 100%; padding: 0.7rem; font-size: 1.05rem;
     font-variant: small-caps; letter-spacing: 0.08em;
   }
+
+  /* --- Worlds (M2i) --------------------------------------------------------
+     A world card reads like a campaign card but sits above it, so the visual
+     hierarchy matches the real one: choose the setting, then the playthrough. */
+  .start-world {
+    display: flex; justify-content: space-between; align-items: center; gap: 0.6rem;
+    padding: 0.6rem 0.7rem; border: 1px solid var(--line2); border-radius: 0.5rem;
+    margin-bottom: 0.45rem; cursor: pointer; background: var(--panel2);
+  }
+  .start-world:hover { border-color: var(--accent); }
+  .start-world.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .start-world .sw-name { font-size: 1rem; }
+  .start-world .sw-meta { font-size: 0.72rem; color: var(--dim); text-align: right; }
+  .world-desc { font-size: 0.84rem; color: var(--dim); margin: 0 0 0.7rem; }
+  .danger { border-color: #7a3b3b; color: #d99; }
+  .danger:hover { border-color: #b55; color: #f2b0b0; }
+
+  /* Content studio lists (lore entities, story beats) */
+  .studio-list { margin: 0.4rem 0 0; max-height: 46vh; overflow-y: auto; }
+  .studio-row {
+    display: flex; align-items: baseline; gap: 0.5rem; padding: 0.4rem 0.2rem;
+    border-bottom: 1px solid var(--line2); font-size: 0.86rem;
+  }
+  .studio-row .sr-type {
+    font-size: 0.68rem; color: var(--dim); text-transform: uppercase;
+    letter-spacing: 0.06em; min-width: 5.5rem; flex-shrink: 0;
+  }
+  .studio-row .sr-name { flex: 1; }
+  .studio-row .sr-sub { color: var(--dim); font-size: 0.76rem; }
+  .studio-row button { padding: 0.1rem 0.4rem; font-size: 0.72rem; }
+
+  /* --- Knowledge-graph explorer (M2i) ------------------------------------- */
+  #graph-screen {
+    position: fixed; inset: 0; z-index: 7; background: var(--bg);
+    display: none; flex-direction: column;
+  }
+  #graph-screen.open { display: flex; }
+  .graph-bar {
+    display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+    padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line2); background: var(--panel);
+  }
+  .graph-spacer { flex: 1; }
+  .graph-types { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .graph-types button {
+    padding: 0.15rem 0.5rem; font-size: 0.74rem; border-radius: 1rem;
+    background: transparent; border: 1px solid var(--line2); color: var(--dim);
+  }
+  .graph-types button.on { border-color: var(--accent); color: var(--fg); }
+  .graph-body { flex: 1; display: flex; min-height: 0; }
+  #graph-svg { flex: 1; cursor: grab; touch-action: none; }
+  #graph-svg:active { cursor: grabbing; }
+  #graph-svg .edge { stroke: var(--line2); stroke-width: 1; }
+  #graph-svg .edge.lit { stroke: var(--accent); stroke-width: 1.6; }
+  #graph-svg .node circle { stroke: var(--bg); stroke-width: 1.5; cursor: pointer; }
+  #graph-svg .node.sel circle { stroke: var(--fg); stroke-width: 2.5; }
+  #graph-svg .node text { font-size: 13px; fill: var(--fg); pointer-events: none; }
+  #graph-svg .node.sel text { fill: var(--accent); }
+  #graph-svg .elabel { font-size: 10px; fill: var(--dim); pointer-events: none; }
+  .graph-inspect {
+    width: min(22rem, 40vw); border-left: 1px solid var(--line2); background: var(--panel);
+    padding: 1rem; overflow-y: auto; font-size: 0.86rem;
+  }
+  .graph-inspect h3 { margin: 0 0 0.2rem; font-size: 1rem; }
+  .graph-inspect .gi-type { font-size: 0.7rem; color: var(--dim); letter-spacing: 0.08em;
+    text-transform: uppercase; }
+  .graph-inspect .gi-prose { margin: 0.7rem 0; line-height: 1.55; white-space: pre-wrap; }
+  .graph-inspect .gi-links { margin-top: 0.6rem; }
+  .graph-inspect .gi-link { display: block; padding: 0.2rem 0; color: var(--dim);
+    font-size: 0.8rem; cursor: pointer; }
+  .graph-inspect .gi-link:hover { color: var(--accent); }
+  .graph-inspect textarea { min-height: 8rem; }
 </style>
 </head>
 <body>
@@ -247,6 +318,11 @@
   <div id="app">
     <aside id="sidebar">
       <div class="side-section">
+        <h2>World</h2>
+        <div id="world-name" class="muted">—</div>
+      </div>
+
+      <div class="side-section">
         <h2>Campaign</h2>
         <div class="field"><select id="campaign-select"></select></div>
         <button id="new-campaign" class="ghost small">＋ New campaign</button>
@@ -261,7 +337,10 @@
       <div class="side-section">
         <h2>World lore</h2>
         <div id="world-status" class="muted">—</div>
-        <button id="upload-world" class="ghost small" style="margin-top:0.5rem">⇪ Upload world</button>
+        <div class="row" style="gap:0.4rem; margin-top:0.5rem">
+          <button id="upload-world" class="ghost small">⇪ Upload lore</button>
+          <button id="explore-world" class="ghost small">🕸 Explore</button>
+        </div>
       </div>
 
       <div class="side-section">
@@ -282,11 +361,19 @@
     </div>
   </div>
 
-  <!-- Start menu (M2d): shown on load; play connects only when chosen. -->
+  <!-- Start menu (M2d): shown on load; play connects only when chosen.
+       M2i put worlds above campaigns — the world you pick decides which
+       campaigns, characters and stories exist below it. -->
   <div id="start-screen">
     <div class="start-card">
       <h1>Dungeon Master</h1>
-      <p class="muted">Choose a campaign, ready your party, then step into the world.</p>
+      <p class="muted">Pick a world, choose a campaign, ready your party, then step in.</p>
+      <div class="start-section">
+        <h2>Worlds</h2>
+        <div id="start-worlds"></div>
+        <button id="start-new-world" class="ghost small">＋ New world</button>
+      </div>
+      <div id="start-world-detail" class="start-detail"></div>
       <div class="start-section">
         <h2>Campaigns</h2>
         <div id="start-campaigns"></div>
@@ -297,9 +384,25 @@
     </div>
   </div>
 
+  <!-- Knowledge-graph explorer (M2i): the world's canon, laid out client-side. -->
+  <div id="graph-screen">
+    <div class="graph-bar">
+      <strong id="graph-title">World</strong>
+      <span id="graph-types" class="graph-types"></span>
+      <span class="graph-spacer"></span>
+      <span id="graph-count" class="muted"></span>
+      <button id="graph-close" class="ghost small">✕ Close</button>
+    </div>
+    <div class="graph-body">
+      <svg id="graph-svg"></svg>
+      <div id="graph-inspect" class="graph-inspect"></div>
+    </div>
+  </div>
+
   <div id="overlay"><div id="modal"></div></div>
 
   <script src="/static/stage.js"></script>
+  <script src="/static/graph.js"></script>
   <script src="/static/manage.js"></script>
 </body>
 </html>

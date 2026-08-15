@@ -19,7 +19,9 @@ def _ctx(sink: list) -> ToolContext:
     async def emit(ev):
         sink.append(ev)
 
-    return ToolContext(campaign_id=uuid.uuid4(), session_id=uuid.uuid4(), emit=emit)
+    return ToolContext(
+        world_id=uuid.uuid4(), campaign_id=uuid.uuid4(), session_id=uuid.uuid4(), emit=emit
+    )
 
 
 async def test_check_reports_outcome_and_breakdown():

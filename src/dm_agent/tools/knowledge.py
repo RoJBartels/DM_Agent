@@ -52,7 +52,7 @@ async def _lookup_rules(ctx: ToolContext, args: dict[str, Any]) -> str:
 async def _lookup_lore_tool(ctx: ToolContext, args: dict[str, Any]) -> str:
     if not embeddings_available():
         return _NO_EMBEDDINGS
-    answer = await _lookup_lore(ctx.campaign_id, args["question"])
+    answer = await _lookup_lore(ctx.world_id, ctx.campaign_id, args["question"])
     if answer.source_ids:
         return f"{answer.text}\n\n(sources: {', '.join(answer.source_ids)})"
     return answer.text

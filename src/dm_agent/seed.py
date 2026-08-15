@@ -2,19 +2,30 @@
 
 from sqlalchemy import select
 
-from dm_agent.db import Campaign, Character, GameSession, db_session
+from dm_agent.db import Campaign, Character, GameSession, World, db_session
 
 DEMO_CAMPAIGN = "Demo Campaign"
+DEMO_WORLD = "Demo World"
 
 
 async def ensure_demo_session() -> dict:
-    """Get-or-create a demo campaign with one PC and return its latest session."""
+    """Get-or-create a demo world + campaign with one PC, and return its session."""
     async with db_session() as s:
         campaign = (
             await s.execute(select(Campaign).where(Campaign.name == DEMO_CAMPAIGN))
         ).scalar_one_or_none()
         if campaign is None:
-            campaign = Campaign(name=DEMO_CAMPAIGN)
+            world = (
+                await s.execute(select(World).where(World.name == DEMO_WORLD))
+            ).scalar_one_or_none()
+            if world is None:
+                world = World(
+                    name=DEMO_WORLD,
+                    description="A starter setting. Upload lore to give it a canon of its own.",
+                )
+                s.add(world)
+                await s.flush()
+            campaign = Campaign(name=DEMO_CAMPAIGN, world_id=world.id)
             s.add(campaign)
             await s.flush()
             s.add(

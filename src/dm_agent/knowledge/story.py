@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
 from dm_agent.config import get_settings
-from dm_agent.db import Node, StoryBeat, db_session
+from dm_agent.db import Campaign, Node, StoryBeat, db_session
 
 log = logging.getLogger(__name__)
 
@@ -154,13 +154,17 @@ async def build_story(
 
     Idempotent: wipes and rebuilds this campaign's beats. The first beat is marked
     `active` (so the narrator always has a current beat to pace toward); the rest
-    start `upcoming`."""
+    start `upcoming`. A story is a campaign's arc, but the canon its beats can
+    reference belongs to the campaign's *world* (M2i), so the roster comes from
+    there."""
     settings = get_settings()
     client = client or anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
 
     async with db_session() as session:
         rows = await session.execute(
-            select(Node.id, Node.name).where(Node.campaign_id == campaign_id)
+            select(Node.id, Node.name)
+            .join(Campaign, Campaign.world_id == Node.world_id)
+            .where(Campaign.id == campaign_id)
         )
         known = {slug: name for slug, name in rows}
 

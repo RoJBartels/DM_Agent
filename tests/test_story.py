@@ -76,7 +76,7 @@ async def _add_beat(campaign_id, order, title, status):
 
 
 async def test_active_and_upcoming_selects_active_plus_next(campaign):
-    campaign_id, _ = campaign
+    _, campaign_id, _ = campaign
     await _add_beat(campaign_id, 0, "Prologue", "completed")
     await _add_beat(campaign_id, 1, "Arrival", "active")
     await _add_beat(campaign_id, 2, "Banquet", "upcoming")
@@ -90,12 +90,12 @@ async def test_active_and_upcoming_selects_active_plus_next(campaign):
 
 
 async def test_active_and_upcoming_empty_for_guideless_campaign(campaign):
-    campaign_id, _ = campaign
+    _, campaign_id, _ = campaign
     assert await active_and_upcoming(campaign_id) == []
 
 
 async def test_update_story_progress_tool(campaign):
-    campaign_id, session_id = campaign
+    _, campaign_id, session_id = campaign
     beat_id = await _add_beat(campaign_id, 0, "Arrival", "active")
 
     events: list = []
@@ -103,7 +103,9 @@ async def test_update_story_progress_tool(campaign):
     async def emit(ev):
         events.append(ev)
 
-    ctx = ToolContext(campaign_id=campaign_id, session_id=session_id, emit=emit)
+    ctx = ToolContext(
+        world_id=uuid.uuid4(), campaign_id=campaign_id, session_id=session_id, emit=emit
+    )
 
     ok = await _update_story_progress(ctx, {"beat_id": str(beat_id), "status": "completed"})
     assert "completed" in ok and "Arrival" in ok
@@ -120,6 +122,8 @@ async def test_update_story_progress_tool(campaign):
     assert bad.startswith("Error:")
 
     # a beat in another campaign is invisible
-    other = ToolContext(campaign_id=uuid.uuid4(), session_id=session_id, emit=emit)
+    other = ToolContext(
+        world_id=uuid.uuid4(), campaign_id=uuid.uuid4(), session_id=session_id, emit=emit
+    )
     miss = await _update_story_progress(other, {"beat_id": str(beat_id), "status": "active"})
     assert miss.startswith("Error:")

@@ -17,7 +17,9 @@ def _ctx():
     async def emit(_ev):  # pragma: no cover - never reached in these tests
         raise AssertionError("read-only tools must not emit events")
 
-    return ToolContext(campaign_id=uuid.uuid4(), session_id=uuid.uuid4(), emit=emit)
+    return ToolContext(
+        world_id=uuid.uuid4(), campaign_id=uuid.uuid4(), session_id=uuid.uuid4(), emit=emit
+    )
 
 
 async def test_lookup_rules_degrades_without_embeddings(monkeypatch):

@@ -34,6 +34,7 @@ Write nothing about dice or game mechanics.
 
 
 async def summarize_scene(
+    world_id: uuid.UUID,
     campaign_id: uuid.UUID,
     session_id: uuid.UUID,
     transcript: str,
@@ -43,7 +44,11 @@ async def summarize_scene(
     model: str | None = None,
 ) -> DynamicChunk | None:
     """Summarize a scene transcript into one dynamic chunk. Returns it, or None if
-    there was nothing to summarize."""
+    there was nothing to summarize.
+
+    Reads the entity roster from the campaign's *world* (canon is world-scoped
+    since M2i) but files the chunk under the campaign, which is whose play it is.
+    """
     if not transcript.strip():
         return None
 
@@ -54,7 +59,7 @@ async def summarize_scene(
 
     async with db_session() as session:
         rows = await session.execute(
-            select(Node.id, Node.name).where(Node.campaign_id == campaign_id)
+            select(Node.id, Node.name).where(Node.world_id == world_id)
         )
         known = {slug: name for slug, name in rows}
 

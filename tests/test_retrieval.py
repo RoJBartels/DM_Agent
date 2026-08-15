@@ -6,15 +6,19 @@ Integration test — uses the real Postgres (skips if unreachable) with a fake,
 torch-free embedder.
 """
 
-from dm_agent.db import DynamicChunk, Edge, Node, db_session
+import uuid
+
+from sqlalchemy import delete
+
+from dm_agent.db import Campaign, DynamicChunk, Edge, Node, db_session
 from dm_agent.knowledge.retrieval import gather_context
 
 
-async def _seed(campaign_id, session_id, embedder):
+async def _seed(world_id, campaign_id, session_id, embedder):
     async with db_session() as s:
         s.add(
             Node(
-                campaign_id=campaign_id,
+                world_id=world_id,
                 id="duke-aldric",
                 type="Character",
                 name="Duke Aldric Vane",
@@ -25,7 +29,7 @@ async def _seed(campaign_id, session_id, embedder):
         )
         s.add(
             Node(
-                campaign_id=campaign_id,
+                world_id=world_id,
                 id="harvest-banquet",
                 type="Event",
                 name="Harvest Banquet",
@@ -36,7 +40,7 @@ async def _seed(campaign_id, session_id, embedder):
         )
         s.add(
             Edge(
-                campaign_id=campaign_id,
+                world_id=world_id,
                 src="harvest-banquet",
                 dst="duke-aldric",
                 type="HOSTED_BY",
@@ -56,12 +60,13 @@ async def _seed(campaign_id, session_id, embedder):
 
 
 async def test_recency_override_surfaces_death(campaign, fake_embedder):
-    campaign_id, session_id = campaign
-    await _seed(campaign_id, session_id, fake_embedder)
+    world_id, campaign_id, session_id = campaign
+    await _seed(world_id, campaign_id, session_id, fake_embedder)
 
     async with db_session() as s:
         ctx = await gather_context(
             s,
+            world_id,
             campaign_id,
             question="Who hosts the Harvest Banquet?",
             entity_names=["Duke Aldric", "Harvest Banquet"],
@@ -79,10 +84,41 @@ async def test_recency_override_surfaces_death(campaign, fake_embedder):
 
 
 async def test_unknown_entity_returns_empty_context(campaign, fake_embedder):
-    campaign_id, session_id = campaign
-    # nothing seeded → empty campaign
+    world_id, campaign_id, session_id = campaign
+    # nothing seeded → empty world
     async with db_session() as s:
         ctx = await gather_context(
-            s, campaign_id, "Who is the Archmage of Nowhere?", ["Archmage"], fake_embedder
+            s, world_id, campaign_id, "Who is the Archmage of Nowhere?", ["Archmage"], fake_embedder
         )
     assert ctx.is_empty()
+
+
+async def test_canon_is_shared_by_world_but_play_is_not(campaign, fake_embedder):
+    """M2i's isolation claim, at the layer that matters: a second campaign in the
+    same world inherits its canon, but never sees the first campaign's play."""
+    world_id, campaign_id, session_id = campaign
+    await _seed(world_id, campaign_id, session_id, fake_embedder)
+
+    sibling_id = uuid.uuid4()
+    async with db_session() as s:
+        s.add(Campaign(id=sibling_id, world_id=world_id, name=f"sibling-{sibling_id}"))
+        await s.commit()
+
+    try:
+        async with db_session() as s:
+            ctx = await gather_context(
+                s,
+                world_id,
+                sibling_id,
+                question="Who hosts the Harvest Banquet?",
+                entity_names=["Duke Aldric", "Harvest Banquet"],
+                embedder=fake_embedder,
+            )
+        # Same setting: the Duke and his banquet are canon here too.
+        assert "duke-aldric" in ctx.source_ids
+        # Different playthrough: the other party's assassination never happened here.
+        assert ctx.dynamic_hits == []
+    finally:
+        async with db_session() as s:
+            await s.execute(delete(Campaign).where(Campaign.id == sibling_id))
+            await s.commit()
